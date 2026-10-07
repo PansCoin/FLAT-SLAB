@@ -1829,6 +1829,12 @@ class Formwork:
         self.sections = []                         # wall sections: (wall, tc, side list)
         self.ws_cover = Polygon()                  # area covered by the wall sections
         self._cores = None
+        # what is already on the plan (texts, sections, walls, columns): later texts keep clear of it
+        self.occ = defaultdict(list)
+        for g in getattr(G.walls_union, "geoms", [G.walls_union]):
+            self._reg(g)
+        for c in G.columns:
+            self._reg(c.poly)
         self.ws_stub = float((fw.get("wall_sections") or {}).get("wall_extension", 150))
         for name, col in [("FW_WALL_HATCH", 8), ("FW_COLUMN_HATCH", 8), ("FW_SLAB_SECTION", 8),
                           ("FW_WALL_SECTION", 8), ("FW_DIM", 7), ("FW_TEXT", 7), ("FW_AXIS", 7),
@@ -1852,6 +1858,110 @@ class Formwork:
         t = self.msp.add_text(txt, height=h / self.u, rotation=rot,
                               dxfattribs={"layer": layer, "style": "REBAR_TXT", "color": self.tcol})
         t.set_placement(self.m(at), align=getattr(ezdxf.enums.TextEntityAlignment, align))
+        self._reg(self._tbox(txt, at, h, rot, align))
+
+    # --- keeping things apart --------------------------------------------------------
+    CELL = 2000.0
+
+    def _cells(self, g):
+        x0, y0, x1, y1 = g.bounds
+        c = self.CELL
+        for i in range(int(x0 // c), int(x1 // c) + 1):
+            for j in range(int(y0 // c), int(y1 // c) + 1):
+                yield i, j
+
+    def _reg(self, g):
+        """Mark an area of the plan as taken."""
+        if g is None or g.is_empty:
+            return
+        for k in self._cells(g):
+            self.occ[k].append(g)
+
+    def _overlap(self, g):
+        """How much of g is already taken (to pick the least bad place when none is free)."""
+        g = g.buffer(0.15 * self.th, join_style=2)
+        seen, tot = set(), 0.0
+        for k in self._cells(g):
+            for o in self.occ.get(k, ()):
+                if id(o) not in seen:
+                    seen.add(id(o))
+                    if o.intersects(g):
+                        tot += o.intersection(g).area
+        return tot
+
+    def _clear(self, g, margin=None):
+        g = g.buffer(0.15 * self.th if margin is None else margin, join_style=2)
+        seen = set()
+        for k in self._cells(g):
+            for o in self.occ.get(k, ()):
+                if id(o) not in seen:
+                    seen.add(id(o))
+                    if o.intersects(g):
+                        return False
+        return True
+
+    @staticmethod
+    def _tbox(txt, at, h, rot=0, align="MIDDLE_CENTER"):
+        """Area a text takes (Arial-like proportions)."""
+        w = 0.8 * h * len(txt)
+        v, hz = align.split("_")
+        x0 = {"LEFT": 0.0, "CENTER": -w / 2, "RIGHT": -w}[hz]
+        y0 = {"BOTTOM": 0.0, "MIDDLE": -h / 2, "TOP": -h}[v]
+        c, s_ = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+        return Polygon([(at[0] + x * c - y * s_, at[1] + x * s_ + y * c)
+                        for x, y in ((x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h))])
+
+    def dim_auto(self, a, b, at, line, horiz, txt, pref=0):
+        """Dimension a..b along X (horiz) or Y, measured at 'at', dimension line at 'line'. The text goes
+        to the first free place: between the extension lines (if it fits), beside the chain end
+        (pref +1 after it, -1 before it), on the other side of the line, or a row further out."""
+        th = self.th
+        tw = 0.8 * 1.2 * th * len(txt)
+        r = 0.9 * th                                  # text centre off the dimension line
+        up = 1 if horiz else -1                       # text above X dimensions, left of Y dimensions
+        mid = (a + b) / 2
+        fits = b - a >= tw + 0.4 * th
+        before, after = a - 0.4 * th - tw / 2, b + 0.4 * th + tw / 2
+        ends = [after, before] if pref >= 0 else [before, after]
+        cands = []
+        if fits:                                      # along the segment first, both sides of the line
+            room = (b - a - tw) / 2 - 0.2 * th
+            for f in (0, -0.4, 0.4, -0.8, 0.8):
+                cands += [(mid + f * room, up * r), (mid + f * room, -up * r)]
+            if pref != 0:
+                cands[2:2] = [(ends[0], up * r)]
+        else:
+            cands += [(ends[0], up * r), (ends[1], up * r), (ends[0], -up * r), (ends[1], -up * r)]
+        cands += [(mid, up * (r + 1.5 * th)), (mid, -up * (r + 1.5 * th)),
+                  (ends[0], up * (r + 1.5 * th)), (ends[1], up * (r + 1.5 * th))]
+        if fits:
+            cands += [(ends[0], up * r), (ends[1], up * r)]
+        rot = 0 if horiz else 90
+        pick = None
+        for sa, off in cands:
+            c = (sa, line + off) if horiz else (line + off, sa)
+            bx = self._tbox(txt, c, 1.2 * th, rot)
+            if self._clear(bx):
+                pick = (c, bx)
+                break
+        if pick is None:                              # nowhere free: the least covered place
+            opts = []
+            for sa, off in cands:
+                c = (sa, line + off) if horiz else (line + off, sa)
+                bx = self._tbox(txt, c, 1.2 * th, rot)
+                opts.append((self._overlap(bx), c, bx))
+            _, c, bx = min(opts, key=lambda o: o[0])
+            pick = (c, bx)
+        self._reg(pick[1])
+        if horiz:
+            self.dim((a, at), (b, at), (a, line), 0, text_at=pick[0], text=txt)
+        else:
+            self.dim((at, a), (at, b), (line, a), 90, text_at=pick[0], text=txt)
+
+    def _fmt(self, length, half=True):
+        unit = UNIT_MM.get(self.cfg.get("drawing", {}).get("dimension_unit", "cm"), 10.0)
+        v = round(length / unit * 2) / 2 if half else round(length / unit)
+        return f"{v:.0f}" if v == int(v) else f"{v:.1f}"
 
     def dim(self, p1, p2, base, angle, text_at=None, text="<>"):
         try:
@@ -1860,6 +1970,8 @@ class Formwork:
             if text_at is not None:
                 d.set_location(self.m(text_at), leader=False, relative=False)
             d.render()
+            if d.dimension.dxf.get("text_midpoint") is None:     # a blank text leaves none (readers need it)
+                d.dimension.dxf.text_midpoint = self.m(text_at if text_at is not None else base)
         except Exception as ex:
             warn(f"formwork dimension could not be drawn: {ex}")
 
@@ -1894,10 +2006,9 @@ class Formwork:
         for c in self.G.columns:
             self.hatch(c.poly, "FW_COLUMN_HATCH", "ANSI37", self.hatch_scale())
 
-    def walls_and_columns(self, cut=None):
+    def labels(self):
+        """Names of the walls (SWn X x Y) and columns, each at the first free place around the element."""
         G, th = self.G, self.th
-        self.hatch_elements(cut)
-        # walls: name and size  SWn  X-size x Y-size (cm), e.g. SW6 200X25 / SW1 25X220
         order = sorted(G.walls, key=lambda w: (-round(w.cy / 500), w.cx))
         sec = {id(w): tc for w, tc, _ in self.sections}
         k = 0
@@ -1907,28 +2018,43 @@ class Formwork:
             k += 1
             x0, y0, x1, y1 = w.poly.bounds
             txt = f"SW{k} {(x1 - x0) / 10:.0f}X{(y1 - y0) / 10:.0f}"
-            t = (w.lo + w.hi) / 2
+            tw = 0.7 * th * len(txt)
+            ts = [(w.lo + w.hi) / 2]
             if id(w) in sec:                       # beside the wall, clear of its section
                 tc = sec[id(w)]
                 half = self.P.h / 2 + self.ws_stub
                 a, b = (w.lo, tc - half), (tc + half, w.hi)
-                t = sum(a) / 2 if a[1] - a[0] > b[1] - b[0] else sum(b) / 2
+                ts = sorted([sum(a) / 2, sum(b) / 2], key=lambda t: -(b[1] - b[0] if t > tc else a[1] - a[0]))
+            ts += [w.lo + tw / 2, w.hi - tw / 2, (w.lo + w.hi) / 2]
             if w.orient == "x":
-                side = 1 if self._inside((t, w.cy + w.thk / 2 + 1.2 * th)) else -1
-                self.text(txt, (t, w.cy + side * (w.thk / 2 + 0.9 * th)), th,
-                          align="BOTTOM_CENTER" if side > 0 else "TOP_CENTER")
+                inside = 1 if self._inside((w.cx, w.cy + w.thk / 2 + 1.2 * th)) else -1
+                cands = [((t, w.cy + sd * (w.thk / 2 + row * th)), 0, "BOTTOM_CENTER" if sd > 0 else "TOP_CENTER")
+                         for row in (0.9, 2.6) for sd in (inside, -inside) for t in ts]
             else:
-                side = 1 if self._inside((w.cx + w.thk / 2 + 1.2 * th, t)) else -1
-                self.text(txt, (w.cx + side * (w.thk / 2 + 0.9 * th), t), th, rot=90,
-                          align="TOP_CENTER" if side > 0 else "BOTTOM_CENTER")
-        # cores: one name in the middle
-        for hp in self._core_holes():
-            self.text("CORE", hp.representative_point().coords[0], th)
-        # columns: hatch + name  Cn-b/h  or  Cn-Ød
+                inside = 1 if self._inside((w.cx + w.thk / 2 + 1.2 * th, w.cy)) else -1
+                cands = [((w.cx + sd * (w.thk / 2 + row * th), t), 90, "TOP_CENTER" if sd > 0 else "BOTTOM_CENTER")
+                         for row in (0.9, 2.6) for sd in (inside, -inside) for t in ts]
+            self._place(txt, th, cands)
+        # columns: name  Cn-b/h  or  Cn-Ød, below the column if free, else around it
         cols = sorted(G.columns, key=lambda c: (-round(c.cy / 500), c.cx))
         for i, c in enumerate(cols, 1):
             size = f"Ø{c.wx / 10:.0f}" if c.round else f"{c.wx / 10:.0f}/{c.wy / 10:.0f}"
-            self.text(f"C{i}-{size}", (c.cx, c.cy - c.wy / 2 - 0.5 * th), 0.9 * th, align="TOP_CENTER")
+            x0, y0, x1, y1 = c.poly.bounds
+            g = 0.5 * th
+            cands = [((c.cx, y0 - g), 0, "TOP_CENTER"), ((c.cx, y1 + g), 0, "BOTTOM_CENTER"),
+                     ((x1 + g, c.cy), 0, "MIDDLE_LEFT"), ((x0 - g, c.cy), 0, "MIDDLE_RIGHT"),
+                     ((c.cx, y0 - 2.2 * th), 0, "TOP_CENTER"), ((c.cx, y1 + 2.2 * th), 0, "BOTTOM_CENTER"),
+                     ((x1 + g, y0 - g), 0, "TOP_LEFT"), ((x0 - g, y0 - g), 0, "TOP_RIGHT")]
+            self._place(f"C{i}-{size}", 0.9 * th, cands)
+
+    def _place(self, txt, h, cands):
+        """Write a text at the first candidate place (at, rotation, alignment) that is free."""
+        for at, rot, align in cands:
+            if self._clear(self._tbox(txt, at, h, rot, align)):
+                break
+        else:                                         # nowhere free: the least covered place
+            at, rot, align = min(cands, key=lambda c: self._overlap(self._tbox(txt, c[0], h, c[1], c[2])))
+        self.text(txt, at, h, rot=rot, align=align)
 
     # --- sections through the shear walls ---------------------------------------
     def _core_holes(self):
@@ -2022,6 +2148,7 @@ class Formwork:
             wall = [xy(b, a) for a, b in self._bar(t0, t1, n0, n1, True, True)]
             shape = unary_union([Polygon(strip).buffer(0), Polygon(wall).buffer(0)])
             cover.append(shape)
+            self._reg(shape)
             for pg in getattr(shape, "geoms", [shape]):
                 hb = self.msp.add_hatch(color=8, dxfattribs={"layer": "FW_WALL_SECTION"})
                 hb.set_solid_fill(color=8)
@@ -2042,7 +2169,9 @@ class Formwork:
             face = n0 if sd < 0 else n1
             end = face + sd * (e + 1.1 * th)
             p1, p2 = xy(face, tc - h / 2), xy(face, tc + h / 2)
-            self.dim(p1, p2, xy(end, tc - h / 2), 90 if w.orient == "y" else 0)
+            tat = xy(end + sd * 0.9 * th, tc)                    # text on the far side of the line
+            self.dim(p1, p2, xy(end, tc - h / 2), 90 if w.orient == "y" else 0, text_at=tat, text=self._fmt(h))
+            self._reg(self._tbox(self._fmt(h), tat, 1.2 * th, 90 if w.orient == "y" else 0))
             # level of the slab: triangle on the top face, leader and level text
             if lvl:
                 top, out = (tc + h / 2, 1) if w.orient == "y" else (tc - h / 2, -1)
@@ -2066,6 +2195,7 @@ class Formwork:
         far = na - to_wall * 5 * th
         knee = top + out * th
         self.msp.add_lwpolyline([self.m(apex), self.m(xy(na, knee)), self.m(xy(far, knee))], dxfattribs=lay)
+        self._reg(LineString([apex, xy(na, knee), xy(far, knee)]).buffer(0.2 * th))
         # text on the leader, starting at its far end and reading towards the wall
         at = xy(far, knee + out * 0.25 * th)
         self.text(txt, at, 4 / 3 * th, rot=0 if orient == "y" else 90,
@@ -2075,32 +2205,37 @@ class Formwork:
     # --- dimensions of every element ----------------------------------------------
     def dim_chain(self, pts, at, horiz, sg):
         """Dimension chain through the points pts (along X if horiz, else along Y), with its line
-        0.8 x text height beyond 'at' on side sg. Values to 0.5 cm (12.5). A text that does not fit
-        between its extension lines goes outside: the first one before the chain, the last one after
-        it, the ones in between one row further out."""
-        th = self.th
-        unit = UNIT_MM.get(self.cfg.get("drawing", {}).get("dimension_unit", "cm"), 10.0)
-        line = at + sg * 0.8 * th
+        0.8 x text height beyond 'at' on side sg. Values to 0.5 cm (12.5). Each text goes to a free
+        place: the first one before the chain, the last one after it if they do not fit."""
+        line = at + sg * 0.8 * self.th
         segs = [(a, b) for a, b in zip(pts, pts[1:]) if b - a > 1]
         for i, (a, b) in enumerate(segs):
-            v = round((b - a) / unit * 2) / 2
-            txt = f"{v:.0f}" if v == int(v) else f"{v:.1f}"
-            tw = 0.75 * 1.2 * th * len(txt)
-            text_at = None
-            if b - a < tw + 0.4 * th:
-                row = 0.9 * th
-                if i == len(segs) - 1:
-                    tpos = b + 0.3 * th + tw / 2
-                elif i == 0:
-                    tpos = a - 0.3 * th - tw / 2
-                else:
-                    tpos, row = (a + b) / 2, 0.9 * th + 1.5 * th * sg * (1 if horiz else -1)
-                text_at = (tpos, line + row) if horiz else (line - row, tpos)
-            if horiz:
-                self.dim((a, at), (b, at), (a, line), 0, text_at=text_at, text=txt)
-            else:
-                self.dim((at, a), (at, b), (line, a), 90, text_at=text_at, text=txt)
+            pref = 0 if len(segs) == 1 else (-1 if i == 0 else (1 if i == len(segs) - 1 else 0))
+            self.dim_auto(a, b, at, line, horiz, self._fmt(b - a), pref=pref)
+        if segs:                                      # the chain's line is taken too
+            q = 0.25 * self.th
+            self._reg(box(pts[0], line - q, pts[-1], line + q) if horiz else box(line - q, pts[0], line + q, pts[-1]))
         return len(segs)
+
+    def _band(self, lo, hi, at, horiz, sg):
+        """Area a dimension chain on side sg would take."""
+        th = self.th
+        a, b = at + sg * 0.5 * th, at + sg * 1.9 * th
+        a, b = min(a, b), max(a, b)
+        return box(lo, a, hi, b) if horiz else box(a, lo, b, hi)
+
+    def _side(self, lo, hi, at_lo, at_hi, horiz, prefer):
+        """Side (+1/-1) for a chain from lo to hi beside an element spanning at_lo..at_hi across:
+        the preferred side if free (inside the slab, nothing in the way), else the other one."""
+        th = self.th
+        for sg in (prefer, -prefer):
+            at = at_hi if sg > 0 else at_lo
+            mid = (lo + hi) / 2
+            probe = (mid, at + sg * 1.2 * th) if horiz else (at + sg * 1.2 * th, mid)
+            if self._inside(probe) and self._clear(self._band(lo, hi, at, horiz, sg)):
+                return sg, at
+        sg = prefer
+        return sg, (at_hi if sg > 0 else at_lo)
 
     def element_dimensions(self):
         """Every wall, column and opening dimensioned on its own: wall thickness and column sizes split
@@ -2112,7 +2247,7 @@ class Formwork:
         holes = self._core_holes()
 
         def chain(lo, hi, axes):
-            return [lo] + [a for a in sorted(axes) if lo + 5 < a < hi - 5] + [hi]
+            return [lo] + [a for a in sorted(axes) if lo + 20 < a < hi - 20] + [hi]
 
         def free(p):
             q = Point(*p)
@@ -2128,34 +2263,36 @@ class Formwork:
                 ends = [(y0, -1), (y1, 1)]
                 if id(w) in sec and sec[id(w)] > (y0 + y1) / 2:
                     ends.reverse()
-                for e, sg in ends:
-                    if free((w.cx, e + sg * 1.2 * th)):
-                        n += self.dim_chain(chain(x0, x1, xs), e, True, sg)
-                        break
+                ends = [e for e in ends if free((w.cx, e[0] + e[1] * 1.2 * th))]   # not at a junction
+                ends.sort(key=lambda e: not self._clear(self._band(x0, x1, e[0], True, e[1])))
+                if ends:
+                    n += self.dim_chain(chain(x0, x1, xs), ends[0][0], True, ends[0][1])
             else:
                 ends = [(x0, -1), (x1, 1)]
                 if id(w) in sec and sec[id(w)] > (x0 + x1) / 2:
                     ends.reverse()
-                for e, sg in ends:
-                    if free((e + sg * 1.2 * th, w.cy)):
-                        n += self.dim_chain(chain(y0, y1, ys), e, False, sg)
-                        break
+                ends = [e for e in ends if free((e[0] + e[1] * 1.2 * th, w.cy))]   # not at a junction
+                ends.sort(key=lambda e: not self._clear(self._band(y0, y1, e[0], False, e[1])))
+                if ends:
+                    n += self.dim_chain(chain(y0, y1, ys), ends[0][0], False, ends[0][1])
             # length, where no grid line runs along the wall (the grid chains already give it there)
             along = xs if w.orient == "y" else ys
             lo_, hi_ = (x0, x1) if w.orient == "y" else (y0, y1)
             if w.length >= 3 * w.thk and not any(lo_ - 1 <= a <= hi_ + 1 for a in along):
                 if w.orient == "x":
-                    sg = -1 if free((w.cx, y0 - 1.5 * th)) else 1
-                    n += self.dim_chain([x0, x1], y0 if sg < 0 else y1, True, sg)
+                    sg, at = self._side(x0, x1, y0, y1, True, -1)
+                    n += self.dim_chain([x0, x1], at, True, sg)
                 else:
-                    sg = 1 if free((x1 + 1.5 * th, w.cy)) else -1
-                    n += self.dim_chain([y0, y1], x1 if sg > 0 else x0, False, sg)
+                    sg, at = self._side(y0, y1, x0, x1, False, 1)
+                    n += self.dim_chain([y0, y1], at, False, sg)
         for c in G.columns:
             x0, y0, x1, y1 = c.poly.bounds
-            sg = 1 if free((c.cx, y1 + 1.2 * th)) else -1       # across X, above (or below) the column
-            n += self.dim_chain(chain(x0, x1, xs), y1 if sg > 0 else y0, True, sg)
-            sg = 1 if free((x1 + 1.2 * th, c.cy)) else -1       # across Y, right (or left) of the column
-            n += self.dim_chain(chain(y0, y1, ys), x1 if sg > 0 else x0, False, sg)
+            if not c.round and c.poly.area < 0.9 * (x1 - x0) * (y1 - y0):
+                continue                                  # turned column: its sizes are in its name
+            sg, at = self._side(x0, x1, y0, y1, True, 1)  # across X, above (or below) the column
+            n += self.dim_chain(chain(x0, x1, xs), at, True, sg)
+            sg, at = self._side(y0, y1, x0, x1, False, 1)  # across Y, right (or left) of the column
+            n += self.dim_chain(chain(y0, y1, ys), at, False, sg)
         for hole in G.holes:
             if any(hp.buffer(10).contains(hole) for hp in holes):
                 continue                                  # the void inside a core: walls dimension it
@@ -2176,8 +2313,12 @@ class Formwork:
                     if g.geom_type == "LineString" and g.length > 0:
                         self.msp.add_line(self.m(g.coords[0]), self.m(g.coords[-1]),
                                           dxfattribs={"layer": "FW_OPENING"})
-            if not any(hp.buffer(10).contains(hole) for hp in self._core_holes()):
-                self.text("OPENING", hole.representative_point().coords[0], 0.9 * self.th)
+            core = any(hp.buffer(10).contains(hole) for hp in self._core_holes())
+            self.text("CORE" if core else "OPENING", hole.representative_point().coords[0],
+                      self.th if core else 0.9 * self.th)
+        for hp in self._core_holes():                 # a closed box of walls without an opening drawn
+            if not any(hp.buffer(10).contains(hole) for hole in self.G.holes):
+                self.text("CORE", hp.representative_point().coords[0], self.th)
 
     def grid(self):
         """Axis positions: drawn axes if present, otherwise the column lines."""
@@ -2207,13 +2348,19 @@ class Formwork:
                     if span < 1500:
                         continue
                     mid = (p + q) / 2
+                    # not longer than the room to the next parallel grid line (no strips running together)
+                    i = lines.index(gl)
+                    room = min([abs(gl - v) for v in lines[max(i - 1, 0):i + 2] if v != gl] or [4000])
                     for frac in (0.35, 0.25, 0.18):
-                        Ls = min(max(frac * span, 800), 2000)
+                        Ls = min(max(frac * span, 800), 2000, 0.7 * room)
+                        if Ls < 600:
+                            break
                         if dirn == "v":
                             strip = box(mid - h / 2, gl - Ls / 2, mid + h / 2, gl + Ls / 2)
                         else:
                             strip = box(gl - Ls / 2, mid - h / 2, gl + Ls / 2, mid + h / 2)
-                        if solid.contains(strip) and not strip.intersects(blocked):
+                        if solid.contains(strip) and not strip.intersects(blocked) and \
+                                self._clear(strip.buffer(1.5 * th)):
                             self._section(strip, dirn)
                             self.strip_half[(dirn, round(gl))] = max(self.strip_half[(dirn, round(gl))], Ls / 2)
                             self.strip_at.setdefault((dirn, round(gl)), []).append(mid)
@@ -2228,21 +2375,27 @@ class Formwork:
         hb.set_solid_fill(color=8)
         hb.paths.add_polyline_path([self.m(c) for c in strip.exterior.coords], is_closed=True)
         lw = {"layer": "FW_SLAB_SECTION", "lineweight": 50, "color": 7}
+        txt = self._fmt(self.P.h)
         if dirn == "v":
             self.msp.add_line(self.m((x0, y0)), self.m((x0, y1)), dxfattribs=lw)
             self.msp.add_line(self.m((x1, y0)), self.m((x1, y1)), dxfattribs=lw)
-            self.dim((x0, y0), (x1, y0), (x0, y0 - 1.0 * th), 0, text_at=(x1 + 1.6 * th, y0 - 1.0 * th + 0.8 * th))
+            tat = (x1 + 1.6 * th, y0 - 1.0 * th + 0.8 * th)
+            self.dim((x0, y0), (x1, y0), (x0, y0 - 1.0 * th), 0, text_at=tat, text=txt)
+            self._reg(self._tbox(txt, tat, 1.2 * th))
         else:
             self.msp.add_line(self.m((x0, y0)), self.m((x1, y0)), dxfattribs=lw)
             self.msp.add_line(self.m((x0, y1)), self.m((x1, y1)), dxfattribs=lw)
-            self.dim((x1, y0), (x1, y1), (x1 + 1.0 * th, y0), 90, text_at=(x1 + 1.0 * th - 0.8 * th, y1 + 1.6 * th))
+            tat = (x1 + 1.0 * th - 0.8 * th, y1 + 1.6 * th)
+            self.dim((x1, y0), (x1, y1), (x1 + 1.0 * th, y0), 90, text_at=tat, text=txt)
+            self._reg(self._tbox(txt, tat, 1.2 * th, 90))
+        self._reg(strip.buffer(0.3 * th))
 
-    def internal_dimensions(self):
+    def internal_dimensions(self, quiet_columns=False):
         """Dimension chains inside the slab along every grid line, through the columns and shear walls:
         slab edge - element face - element width - clear span - ... - slab edge (as in a usual formwork plan).
         The dimension line lies on the grid line itself, so it passes through the elements; where a
         slab-section symbol sits on the line, the text is moved beside it."""
-        G, th = self.G, self.th
+        G = self.G
         xs, ys, _ = self.grid()
         elems = unary_union([G.walls_union] + [c.poly for c in G.columns]) if G.columns or \
             not G.walls_union.is_empty else Polygon()
@@ -2270,7 +2423,7 @@ class Formwork:
                 pts.sort()
                 uniq = [pts[0]]
                 for p in pts[1:]:
-                    if p - uniq[-1] > 5:
+                    if p - uniq[-1] > 20:
                         uniq.append(p)
                 # keep only segments lying on the slab or inside an element
                 segs = []
@@ -2281,23 +2434,17 @@ class Formwork:
                         segs.append((a, b))
                 if len(segs) < 2:              # nothing crossed on this line
                     continue
-                strips = self.strip_at.get((dirn, round(gl)), [])
-                h = self.P.h
-                for a, b in segs:
-                    mid = (a + b) / 2
-                    tw = 0.75 * 1.2 * th * len(f"{(b - a) / 10:.0f}")
-                    text_at = None
-                    if any(a < sm < b and abs(sm - mid) < h / 2 + tw / 2 + 0.3 * th for sm in strips):
-                        sm = min(strips, key=lambda v: abs(v - mid))
-                        tpos = sm + h / 2 + 0.4 * th + tw / 2
-                        if tpos + tw / 2 > b:
-                            tpos = sm - h / 2 - 0.4 * th - tw / 2
-                        text_at = (tpos, gl + 0.3 * th + 0.6 * th) if dirn == "v" else \
-                                  (gl - 0.3 * th - 0.6 * th, tpos)
-                    if dirn == "v":
-                        self.dim((a, gl), (b, gl), (a, gl), 0, text_at=text_at)
+                for a, b in segs:                 # texts at free places (sections, names, other texts)
+                    mp = Point((a + b) / 2, gl) if dirn == "v" else Point(gl, (a + b) / 2)
+                    if quiet_columns and any(c.poly.contains(mp) for c in G.columns):
+                        # across a column: the column's own chain gives the value, keep the line only
+                        mid = (a + b) / 2
+                        if dirn == "v":
+                            self.dim((a, gl), (b, gl), (a, gl), 0, text_at=(mid, gl), text=" ")
+                        else:
+                            self.dim((gl, a), (gl, b), (gl, a), 90, text_at=(gl, mid), text=" ")
                     else:
-                        self.dim((gl, a), (gl, b), (gl, a), 90, text_at=text_at)
+                        self.dim_auto(a, b, gl, gl, dirn == "v", self._fmt(b - a, half=False))
                     n += 1
         return n
 
@@ -2395,16 +2542,18 @@ class Formwork:
             self.text(n, (x, y - (12 + 1.8 * k) * th), (1.2 if k == 0 else 1.0) * th, align="MIDDLE_LEFT")
 
     def draw(self):
+        # first what has a fixed place, then the names, then the dimensions (their texts move to free places)
         self.ws_cover = self.wall_sections()
-        self.walls_and_columns(cut=self.ws_cover)
+        self.hatch_elements(cut=self.ws_cover)
         self.openings()
         n = self.slab_sections()
         if n == 0:
             warn("formwork plan: no free place found for the slab section symbols")
-        if self.fw.get("internal_dimensions", True):
-            self.internal_dimensions()
+        self.labels()
         if self.fw.get("element_dimensions", True):
             self.element_dimensions()
+        if self.fw.get("internal_dimensions", True):
+            self.internal_dimensions(quiet_columns=self.fw.get("element_dimensions", True))
         self.axes_and_dimensions()
         self.legend_and_notes(self.fw.get("title", "FORMWORK PLAN"))
 
@@ -2443,10 +2592,10 @@ def draw_plan(doc, groups, chains, cfg, P, G, laps, plan, off):
         elif g.kind == "perim":
             dr.draw_perim(g)
     # the dimensions of the formwork plan, on every reinforcement plan too
-    if dc.get("internal_dimensions_on_plans", True):
-        fwp.internal_dimensions()
     if dc.get("element_dimensions_on_plans", True):
         fwp.element_dimensions()
+    if dc.get("internal_dimensions_on_plans", True):
+        fwp.internal_dimensions(quiet_columns=dc.get("element_dimensions_on_plans", True))
     if dc.get("axes_on_plans", True):
         # the same axes and bubbles as on the formwork plan (with its outer dimension chains)
         fwp.axes_and_dimensions(with_dims=bool(dc.get("axis_dimensions_on_plans", True)))

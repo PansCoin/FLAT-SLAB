@@ -112,6 +112,8 @@ A fifth drawing, the **formwork plan**, sits above the four reinforcement plans 
   - wall lengths where no grid line runs along the wall
   - opening sizes
   - a text that does not fit between its extension lines is moved outside the chain
+  - where a grid-line chain crosses a column, it keeps its line but leaves out the number, because the column's own chain already gives it
+- **No overlapping texts:** names, dimension texts, level marks and mid-span sections each go to the first free place. Names try both sides of a wall and several points along it. Dimension texts try positions along their segment, then the other side of the line, then a row further out. Mid-span sections no longer run together where grid lines are close
 - **Title, level, scale, legend and notes.** The notes include "Slab thickness h = 24 cm", concrete, steel and covers.
 
 The slab thickness comes from `slab: thickness` (240 = 24 cm). The level and title come from the `formwork:` section of the config.
