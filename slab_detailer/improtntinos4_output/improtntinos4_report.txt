@@ -1,0 +1,42 @@
+FLAT SLAB DETAILING REPORT (EN 1992-1-1)
+============================================================
+
+Slab area: 455.1 m2,  openings: 2,  walls (straight pieces): 17
+Columns: 12  -> internal: 6, corner: 5, edge: 1
+Support lines X: 338, 800, 3400, 4333, 6574, 8248, 10000, 16387
+Support lines Y: 225, 6538, 9875, 11075, 13238, 13850, 14400, 19588, 23800, 28400
+
+Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
+h=240, c_bot=20, c_top=30, d=198 mm
+
+Anchorage / lap lengths (EC2 8.4, 8.7; sigma_sd = fyd, alpha1..5 = 1)
+  Ø    face   eta1   fbd     lb,rqd   l_bd    l0
+  12   bottom 1.0    2.69    484      500     750
+  12   top    1.0    2.69    484      500     750
+  14   bottom 1.0    2.69    565      600     850
+  14   top    1.0    2.69    565      600     850
+
+Checks
+  As,min (EC2 9.2.1.1) = max(0.26 fctm/fyk, 0.0013) b d = 264 mm2/m  (d = 198 mm)
+  Max spacing (EC2 9.3.1.1(3)): 400 mm generally, 250 mm in zones of max moment
+    Bottom mesh X              ф12/200: As = 565 mm2/m  -> OK; spacing OK
+    Bottom mesh Y              ф12/200: As = 565 mm2/m  -> OK; spacing OK
+    Top mesh X                 ф14/200: As = 770 mm2/m  -> OK; spacing OK
+    Top mesh Y                 ф14/200: As = 770 mm2/m  -> OK; spacing OK
+    Over internal columns: ф18/200 (combined spacing with band/mesh ≈ 100 mm)
+    Over edge columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
+    Over corner columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
+
+Steel quantities
+  ф12     5096.2 m     4524.5 kg
+  ф14     5128.0 m     6196.8 kg
+  TOTAL       10721.2 kg   (23.6 kg/m2)
+
+Warnings
+  - none
+
+Files
+  improtntinos4_output/improtntinos4_REINFORCEMENT_PLANS.dxf
+  improtntinos4_output/improtntinos4_bar_schedule.xlsx
+  improtntinos4_output/improtntinos4_report.txt
+  improtntinos4_output/improtntinos4_REINFORCEMENT_PLANS.png
