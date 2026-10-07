@@ -216,6 +216,36 @@ By default (`mode: representative`) each group is drawn the usual way:
 
 Set `mode: all` to draw every bar.
 
+## Mat foundation (`mat_foundation.py`)
+
+`mat_foundation.py` details the **mat foundation** of the same building, from the same DXF, with the same outputs: formwork plan, the four reinforcement plans, bar schedule, report and preview. Its input file is `config_mat.yaml`:
+
+```
+python mat_foundation.py my_building.dxf -o mat_output
+```
+
+A mat works like an upside-down flat slab. The soil pushes it up and the columns and walls hold it down, so the tension is at the bottom over the supports and at the top in the spans. Compared with the flat slab:
+
+| | Flat slab (`slab_detailer.py`) | Mat foundation (`mat_foundation.py`) |
+|---|---|---|
+| Thickness | 24 cm | 70 cm |
+| Bars | Φ12 bottom, Φ14 top | **Φ20 top and bottom** |
+| Top bars lapped | at mid-span | **over the supports** (column / wall lines) |
+| Bottom bars lapped | over the supports | **at mid-span**, between the supports |
+| Extra bars at columns / walls | top, over them | bottom, under them |
+| Covers | 2 cm bottom, 3 cm top | 5 cm bottom (on blinding), 4 cm top |
+| Bar length (`stock_length`) | 6 m | 12 m |
+| Wall sections on the formwork plan | wall above and below the slab | wall above the mat only (the mat ends at the bottom) |
+
+Notes:
+- The top bars of a 70 cm mat are in **poor bond** (EC2 8.4.2(2)), so their laps are longer: Φ20 top l0 = 175 cm, bottom l0 = 125 cm.
+- **Why 12 m bars:** with 6 m bars and 1.75 m top laps, the spans longer than about 4.25 m cannot keep every top lap over a support. With 12 m bars, every top lap of both example drawings lands over a support and every bottom lap at mid-span.
+- **Level:** `formwork: level` is empty in `config_mat.yaml`. Fill in the level of the top of the mat (e.g. `"-3.50"`) to get it in the title and the level marks on the wall sections.
+- **Integrity bars** are for flat slabs only and are not used in a mat.
+- **Output file names** end in `_MAT` (e.g. `IMPORTDXFNEW_MAT_REINFORCEMENT_PLANS.dxf`).
+
+The mat uses the same engine as the flat slab (`structure: mat_foundation` in `config_mat.yaml`), so every improvement to one applies to the other.
+
 ## 6. EC2 detailing rules the program applies
 
 **Laps (8.4, 8.7)**

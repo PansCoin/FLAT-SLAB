@@ -1,0 +1,47 @@
+MAT FOUNDATION DETAILING REPORT (EN 1992-1-1)
+============================================================
+
+Mat foundation: top bars lapped over the supports, bottom bars at mid-span.
+
+Slab area: 200.7 m2,  openings: 2,  walls (straight pieces): 13
+Columns: 4  -> internal: 3, edge: 1
+Support lines X: 1595, 2846, 4795, 6005, 8281, 10155, 13545
+Support lines Y: 3, 6165, 7548, 9290, 10024, 12348, 15548
+
+Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
+h=700, c_bot=50, c_top=40, d=630 mm
+
+Anchorage / lap lengths (EC2 8.4, 8.7; sigma_sd = fyd, alpha1..5 = 1)
+  Ø    face   eta1   fbd     lb,rqd   l_bd    l0
+  20   bottom 1.0    2.69    807      850     1250
+  20   top    0.7    1.89    1153     1200    1750
+
+Checks
+  As,min (EC2 9.2.1.1) = max(0.26 fctm/fyk, 0.0013) b d = 840 mm2/m  (d = 630 mm)
+  Max spacing (EC2 9.3.1.1(3)): 400 mm generally, 250 mm in zones of max moment
+    Bottom mesh X              ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Bottom mesh Y              ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Top mesh X                 ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Top mesh Y                 ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Under internal columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+    Under edge columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+    Under corner columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+
+Steel quantities
+  ф20     4128.3 m    10181.1 kg
+  TOTAL       10181.1 kg   (50.7 kg/m2)
+
+Warnings
+  - column 1 at (8330,12348) is 3332 mm from opening 1 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 1 at (8330,12348) is 2975 mm from opening 2 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 2 at (10155,9373) is 0 mm from opening 1 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 2 at (10155,9373) is 1499 mm from opening 2 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 3 at (8232,6148) is 1498 mm from opening 1 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 3 at (8232,6148) is 1350 mm from opening 2 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+  - column 4 at (2846,10024) is 3138 mm from opening 2 (< 6d = 3780 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
+
+Files
+  IMPORTDXFNEW_mat_output/IMPORTDXFNEW_MAT_REINFORCEMENT_PLANS.dxf
+  IMPORTDXFNEW_mat_output/IMPORTDXFNEW_MAT_bar_schedule.xlsx
+  IMPORTDXFNEW_mat_output/IMPORTDXFNEW_MAT_report.txt
+  IMPORTDXFNEW_mat_output/IMPORTDXFNEW_MAT_REINFORCEMENT_PLANS.png

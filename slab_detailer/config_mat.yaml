@@ -1,0 +1,184 @@
+# =====================================================================
+#  MAT FOUNDATION detailer - INPUT FILE  (python mat_foundation.py building.dxf)
+#  Same as config.yaml of the flat slab, with the mat values. In a mat the laps are the other
+#  way round: TOP bars lapped OVER THE SUPPORTS, BOTTOM bars AT MID-SPAN.
+#  You decide the reinforcement; the program follows the slab geometry
+#  and details it to EN 1992-1-1 rules (laps, anchorage, curtailment).
+#  All dimensions in this file are in MILLIMETRES.
+# =====================================================================
+
+structure: mat_foundation
+
+# ---------- 1. Your DXF -------------------------------------------------
+units: cm                 # units of the DXF drawing: mm | cm | m
+
+layers:                   # layer names in YOUR drawing (one name or a list)
+  slab:     [SLAB, SLAB OUTLINE]   # slab outline: closed, or lines that close (also lines that stop at
+                                   # the faces of the walls/columns - the walls and columns then close it)
+  openings: [OPENING]     # closed outlines of holes/voids (holes drawn on the slab layer also work)
+  columns:  [COLUMN]      # closed polylines (rectangular) or circles (round); blocks are exploded
+  walls:    [WALL]        # closed outlines of shear walls / core (L-, U- and box shapes are fine)
+  axes:     [AXIS, AXIS LINES]   # grid lines (used for the formwork plan: axis bubbles and dimensions)
+  support_points: []      # FE-model export (SAP2000/ETABS): layer with the support POINTs, e.g. [Support_SAP]
+                          # (a slab layer with 3DFACE mesh elements is read automatically)
+
+support_points:           # only used when the supports are given as points
+  wall_thickness: 250     # rows of points (spacing <= max_spacing) become walls of this thickness
+  column_size: [400, 400] # single points become columns of this size
+  max_spacing: 700
+
+# ---------- 2. Slab and materials ---------------------------------------
+slab:
+  thickness: 700          # h of the mat
+  cover_bottom: 50        # c_nom bottom (cast on blinding concrete)
+  cover_top: 40           # c_nom top
+  cover_side: 50          # bar ends stay 50 mm inside the mat edges and openings
+  effective_depth: 630    # d = h - c_bottom - Φ20 (two bottom layers): punching perimeters u1 at 2d
+
+materials:
+  fck: 25                 # C25/30
+  fyk: 500                # B500B
+  gamma_c: 1.5
+  gamma_s: 1.15
+
+stock_length: 12000       # maximum bar length (Φ20 comes in 12 m). With 6 m bars and the long top laps of a
+                          # 70 cm mat (poor bond: 1.75 m) the spans over 4.25 m cannot keep every top lap
+                          # over a support
+min_bar_length: 500       # mesh pieces shorter than this (slivers over walls, next to openings) are left out
+merge_small_groups: 6     # bar groups of up to this many bars that share one end (sloping edge) become one
+                          # variable-length group: one label and one distribution dimension instead of many
+lap_zone: 0.2             # laps are placed within +-0.2 x span of the support line (TOP bars of the mat)
+                          # or of mid-span (BOTTOM bars of the mat); the whole lap stays inside that zone
+
+# Lap lengths: auto = EC2 8.7.3 (l0 = alpha6 * lb,rqd, full stress, good/poor bond).
+# To force your own values give them per diameter, e.g.  lap_lengths: {10: 600, 12: 700}
+lap_lengths: auto
+stagger_laps: false       # false = all bars lapped at the same section (allowed in slabs, EC2 8.7.2(4), alpha6 = 1.5)
+                          # true  = alternate bars lap at different sections (alpha6 = 1.4, more bar marks)
+
+# ---------- 3. Bottom reinforcement ---------------------------------------
+bottom_mesh:              # mat: laps at MID-SPAN, between the supports
+  x: {dia: 20, spacing: 200}
+  y: {dia: 20, spacing: 200}
+
+integrity_bars:           # flat slabs only (EC2 9.4.1(3)) - not used in a mat
+  enabled: false
+  columns: [internal]     # which columns: internal, edge, corner
+  dia: 14
+  count: 4                # per direction
+  spacing: 100
+  extension_from_face: auto   # auto = 2d + l_bd beyond the column face
+
+# ---------- 4. Top reinforcement ------------------------------------------
+# How the basic top reinforcement is laid out:
+#   mesh                   = full top mesh over the whole slab (laps at mid-span) + extra bars over columns
+#   bands_and_distribution = bands over the grid lines + distribution bars filling the gaps between them
+#                            (lapped into the bands) + extra bars over columns
+#   bands                  = bands over the grid lines only (no top bars in the middle of the panels)
+top_layout: mesh          # mat: always mesh (top and bottom meshes)
+
+top_mesh:                 # mat: laps OVER THE SUPPORTS (column / wall lines)
+  x: {dia: 20, spacing: 200}
+  y: {dia: 20, spacing: 200}
+
+top_grid_bands:           # used when top_layout = bands...: bars crossing every column grid line
+  x: {dia: 10, spacing: 200}
+  y: {dia: 10, spacing: 200}
+  extension_factor: 0.25  # each side = 0.25 x adjacent span (from the grid line)
+  min_extension: 1000
+
+top_distribution_bars:    # used when top_layout = bands_and_distribution
+  dia: 10                 # same spacing as the bands -> each distribution bar laps with a band bar
+  spacing: 200
+
+top_column_bars:          # mat: additional BOTTOM bars UNDER each column, between the bottom mesh bars
+  enabled: false
+  extension_factor: 0.25  # each side = 0.25 x adjacent span (from column centre)
+  min_extension: 1000
+  internal: {dia: 20, spacing: 200, count: 11}   # count: auto = 0.25 x panel width
+  edge:     {dia: 20, spacing: 200, count: 11}
+  corner:   {dia: 20, spacing: 200, count: 11}
+  edge_distance: 500      # a column closer than this to a slab edge/opening is an edge column
+
+top_wall_bars:            # mat: BOTTOM bars across the walls (under them)
+  enabled: false
+  dia: 20
+  spacing: 200
+  extension_factor: 0.25
+  min_extension: 1000
+  skip_on_grid_bands: true  # don't repeat bars where a wall sits on a grid line that already has a band
+
+top_bar_hooks_at_free_edges: false  # true = top bars ending at a mat edge get a bend down
+
+# ---------- 5. Openings and free edges --------------------------------------
+opening_trimmers:         # bars along each side of every opening
+  enabled: false
+  faces: [B, T]
+  dia: 20
+  count: 2                # per side
+  spacing: 100
+
+free_edge_ubars:          # EC2 9.3.1.4: U-bars along free (unsupported) edges
+  enabled: false
+  dia: 12
+  spacing: 200
+  leg: auto               # auto = 2h
+
+# ---------- 6. Punching ------------------------------------------------------
+punching_perimeters:      # draws u1 at 2d around columns (for your punching reinforcement)
+  enabled: false
+  columns: [internal, edge, corner]
+
+# ---------- 7. Formwork plan --------------------------------------------------
+formwork:                 # an extra drawing (above the reinforcement plans) with the slab geometry
+  enabled: true
+  title: MAT FOUNDATION - FORMWORK PLAN
+  level: ""               # level of the top of the mat (e.g. "-3.50"): written after the title and on
+                          # the wall sections; "" = no level
+  scale: 50
+  internal_dimensions: true   # dimension chains inside the slab along the grid lines (through columns/walls)
+  element_dimensions: true    # every wall/column on its own: thickness/sizes split at the axes (12.5|12.5),
+                              # wall lengths off the grid lines, opening sizes
+  wall_sections:              # a section through every shear wall, laid flat on the wall: the wall stands
+    enabled: true             # on the mat (the mat ends at the bottom - no wall below it)
+    slab_extension: 900       # mat shown beyond each wall face (mm)
+    wall_extension: 300       # wall shown above the mat (mm)
+  section_level: ""           # level written on the wall sections, e.g. "+5.90"; "" = the level above
+  text_color: 7
+  notes: []               # extra note lines, e.g. ["Exposure class XC1"]
+
+# ---------- 8. Drawing output ------------------------------------------------
+drawing:
+  mode: representative    # representative = one bar + distribution line + label (normal practice)
+                          # all = every bar drawn (plus the labels)
+  text_height: 150        # in mm, in model space (150 mm = 3 mm on paper at 1:50)
+  dia_symbol: "Φ"
+  label_format: "{mark} {n}{sym}{d}x{L}/{s}"   # {L} and {s} are in cm, like the example drawings
+  dimension_unit: cm      # unit shown on the lap dimensions: cm | mm
+  layer_prefix: "REB_"
+  bar_style: dimension    # dimension = every drawn bar is ONE dimension entity (stretch it in AutoCAD
+                          #             and the length in its label updates by itself)
+                          # polyline  = every drawn bar is a polyline (bar_color / bar_width below)
+  dim_style_name: "REBAR M-200"
+  dim_color: 6            # dimension line colour (6 = magenta)
+  dim_lineweight: 53      # 0.53 mm
+  dim_text_color: 7       # label colour (7 = white; the M-200 style uses 3 = green)
+  bar_notes: true         # text under every bar: number_of_bars Φ dia x length / spacing, e.g. 7Φ12x458/20
+                          # number of bars = distribution dimension / spacing
+  axes_on_plans: true     # axis lines and bubbles (1, 2, 3 … / A, B, C …) on the reinforcement plans too
+  axis_dimensions_on_plans: true    # the outer dimension chains of the formwork plan on the reinforcement plans
+  internal_dimensions_on_plans: true   # the chains along the grid lines on the reinforcement plans
+  element_dimensions_on_plans: true    # the wall/column/opening dimensions on the reinforcement plans
+  hatch_on_plans: true    # walls and columns cross-hatched on the reinforcement plans too
+  distribution_dimensions: true   # dimension across every bar group: width of the area it reinforces
+  label_mode: length      # length = each bar shows only its own length (live, from the dimension)
+                          # full   = mark, number of bars, Ø, length, spacing (e.g. N23 39ф12x<>/20)
+  bar_color: 7            # polyline style only
+  bar_width: 20           # polyline style only (mm)
+  text_color: 7           # colour of the bar labels and plan titles (7 = white)
+  lap_dimensions: true    # dimension over every lap (overlap of two main bars) with its length
+  axis_to_bar_end_dimensions: true   # at every lap: dimension from the closest axis to the end of the bar
+  distribution_lines: false   # true = draw the distribution line with ticks for each bar group
+  notes: false            # true = notes block (materials, covers, lap lengths) above each plan
+  separate_plan_files: false   # true = also write each of the 4 plans as its own DXF
+  preview_png: true       # also writes a PNG preview of the plans

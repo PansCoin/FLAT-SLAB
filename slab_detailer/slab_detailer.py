@@ -18,6 +18,9 @@ from your DXF and:
   * writes: all-layers DXF, TOP and BOTTOM DXFs, bar schedule (xlsx), report (txt),
     PNG previews
 
+Mat foundation: mat_foundation.py runs this same engine with structure: mat_foundation
+(config_mat.yaml) - top bars lapped over the supports, bottom bars at mid-span.
+
 Usage:
     python slab_detailer.py my_slab.dxf                      (uses config.yaml next to it)
     python slab_detailer.py my_slab.dxf -c my_config.yaml -o output_folder
@@ -40,6 +43,15 @@ from shapely.ops import polygonize, unary_union
 
 UNIT_MM = {"mm": 1.0, "cm": 10.0, "m": 1000.0}
 WARNINGS: list[str] = []
+STRUCTURE = ["flat_slab"]          # flat_slab | mat_foundation (set by run() from the config)
+
+
+def is_mat() -> bool:
+    """Mat foundation: an upside-down flat slab (soil pressure up, supports down). Tension is at the
+    bottom over the supports and at the top in the spans, so compared with a flat slab the laps swap
+    (top bars lapped over the supports, bottom bars at mid-span) and the extra bars at the supports
+    are bottom bars."""
+    return STRUCTURE[0] == "mat_foundation"
 
 
 def warn(msg: str):
@@ -810,7 +822,10 @@ def _merged(group, G, P, stock, zf):
 
 
 def top_base(cfg, dirn):
-    """Spacing of the basic top bars the extra column bars are placed between."""
+    """Spacing of the basic bars the extra column bars are placed between (top face; bottom in a mat)."""
+    if is_mat():
+        bm = (cfg.get("bottom_mesh") or {}).get(dirn)
+        return float(bm["spacing"]) if bm else None
     if top_layout(cfg) == "mesh":
         tm = (cfg.get("top_mesh") or {}).get(dirn)
         return float(tm["spacing"]) if tm else None
@@ -1593,7 +1608,7 @@ class Drawer:
                 comp.append(c)
                 stack += list(adj[c] - seen)
             # walk the chain across the bars; start a new straight run where no common place is left
-            comp.sort(key=lambda c: info[c][1])
+            comp.sort(key=lambda c: (info[c][1], info[c][3], info[c][4], info[c][0].mark))   # no ties by address
             run, lo, hi = [], None, None
             for c in comp + [None]:
                 if c is not None:
@@ -1797,9 +1812,9 @@ class Drawer:
             else:
                 lines.append(f"  {self.sym}{d}: bottom {lb:.0f} mm, top {lt:.0f} mm")
         if face in (None, "B"):
-            lines.append("Bottom bars lapped over the supports.")
+            lines.append("Bottom bars lapped at mid-span." if is_mat() else "Bottom bars lapped over the supports.")
         if face in (None, "T"):
-            lines.append("Top bars lapped at mid-span.")
+            lines.append("Top bars lapped over the supports." if is_mat() else "Top bars lapped at mid-span.")
         lines.append("Bar marks: N.. number Ø x length(cm) / spacing(cm). Laps dimensioned in cm.")
         self.layer("REB_NOTES", "NOTES")
         mt = self.msp.add_mtext("\\P".join(lines), dxfattribs={"layer": "REB_NOTES", "style": "REBAR_TXT",
@@ -2145,7 +2160,14 @@ class Formwork:
             s1 = n1 + e_hi if e_hi else (n0 + n1) / 2
             strip = [xy(a, b) for a, b in self._bar(s0, s1, tc - h / 2, tc + h / 2, bool(e_lo), bool(e_hi))]
             t0, t1 = tc - h / 2 - stub, tc + h / 2 + stub
-            wall = [xy(b, a) for a, b in self._bar(t0, t1, n0, n1, True, True)]
+            wave0 = wave1 = True
+            if is_mat():                    # the mat is the lowest slab: the wall only stands on it
+                top_hi = w.orient == "y"    # top face of the section: +t for walls along Y, -t along X
+                if top_hi:
+                    t0, wave0 = tc - h / 2, False
+                else:
+                    t1, wave1 = tc + h / 2, False
+            wall = [xy(b, a) for a, b in self._bar(t0, t1, n0, n1, wave0, wave1)]
             shape = unary_union([Polygon(strip).buffer(0), Polygon(wall).buffer(0)])
             cover.append(shape)
             self._reg(shape)
@@ -2158,7 +2180,7 @@ class Formwork:
             # break lines run on a little past the outline, as drawn by hand
             amp_s, amp_w = 0.15 * h, 0.15 * w.thk
             ends = [(s_, tc - h / 2, tc + h / 2, amp_s, False) for s_, e_ in ((s0, e_lo), (s1, e_hi)) if e_]
-            ends += [(t_, n0, n1, amp_w, True) for t_ in (t0, t1)]
+            ends += [(t_, n0, n1, amp_w, True) for t_, wv in ((t0, wave0), (t1, wave1)) if wv]
             for s_, r0, r1, amp, flip in ends:
                 pts = self._wave(s_, r0, r1, amp, over=0.15)
                 pts = [xy(b, a) if flip else xy(a, b) for a, b in pts]
@@ -2352,7 +2374,7 @@ class Formwork:
                     i = lines.index(gl)
                     room = min([abs(gl - v) for v in lines[max(i - 1, 0):i + 2] if v != gl] or [4000])
                     for frac in (0.35, 0.25, 0.18):
-                        Ls = min(max(frac * span, 800), 2000, 0.7 * room)
+                        Ls = min(max(frac * span, 800, 2 * h), 2000, 0.7 * room)
                         if Ls < 600:
                             break
                         if dirn == "v":
@@ -2519,7 +2541,7 @@ class Formwork:
         y = maxy
         self.text("LEGEND", (x, y), 1.4 * th, align="MIDDLE_LEFT")
         items = [("FW_WALL_HATCH", "ANSI37", "Shear wall"), ("FW_COLUMN_HATCH", "ANSI37", "Column"),
-                 ("FW_SLAB_SECTION", "SOLID", f"R.C. slab section (h = {P.h / 10:.0f} cm)")]
+                 ("FW_SLAB_SECTION", "SOLID", f"R.C. {'mat' if is_mat() else 'slab'} section (h = {P.h / 10:.0f} cm)")]
         for k, (layer, pat, lab) in enumerate(items):
             yy = y - (3 + 2.5 * k) * th
             sw = box(x, yy - 0.6 * th, x + 5 * th, yy + 0.6 * th)
@@ -2533,7 +2555,7 @@ class Formwork:
                                     dxfattribs={"layer": "FW_TEXT"})
             self.text(lab, (x + 6 * th, yy), th, align="MIDDLE_LEFT")
         notes = ["NOTES:",
-                 f"Slab thickness h = {P.h / 10:.0f} cm (everywhere)",
+                 f"{'Mat foundation' if is_mat() else 'Slab'} thickness h = {P.h / 10:.0f} cm (everywhere)",
                  f"Concrete C{P.fck:.0f}/{ {12: 15, 16: 20, 20: 25, 25: 30, 30: 37, 35: 45}.get(int(P.fck), '')}",
                  f"Steel B{P.fyk:.0f}B",
                  f"Cover: bottom {P.cb / 10:.0f} cm, top {P.ct / 10:.0f} cm"]
@@ -2748,7 +2770,8 @@ def write_schedule(path, groups, sym):
     rows.sort(key=lambda g: (int(g.mark[1:]), g.face, g.dirn))
     for g in rows:
         r = ws.max_row + 1
-        ws.append([g.mark, FAM_NAMES.get(g.fam, g.fam), "Top" if g.face == "T" else "Bottom",
+        fam = {"COL": "Under column", "WALL": "Under wall"}.get(g.fam) if is_mat() else None
+        ws.append([g.mark, fam or FAM_NAMES.get(g.fam, g.fam), "Top" if g.face == "T" else "Bottom",
                    g.dirn.upper() if g.kind == "bar" else "edge", g.dia,
                    g.shape + (" (variable, avg. length)" if g.geom.get("var") else ""), g.length, g.n,
                    f"=G{r}*H{r}/1000", round(kg_per_m(g.dia), 3), f"=I{r}*J{r}",
@@ -2831,7 +2854,7 @@ def checks(cfg, P):
     for k in ("internal", "edge", "corner"):
         if cb.get(k):
             s_eff = cb[k]["spacing"] / (2 if top_base(cfg, "x") else 1)
-            out.append(f"  Over {k} columns: ф{cb[k]['dia']}/{cb[k]['spacing']:.0f} "
+            out.append(f"  {'Under' if is_mat() else 'Over'} {k} columns: ф{cb[k]['dia']}/{cb[k]['spacing']:.0f} "
                        f"(combined spacing with band/mesh ≈ {s_eff:.0f} mm)")
             if s_eff > s_peak:
                 warn(f"combined top spacing over {k} columns {s_eff:.0f} mm > {s_peak:.0f} mm")
@@ -2847,7 +2870,10 @@ def write_report(path, P, G, groups, laps, chk_lines, outputs):
         if g.kind in ("bar", "ubar"):
             tot[g.dia] += g.n * g.length / 1000
     with open(path, "w", encoding="utf-8") as f:
-        f.write("FLAT SLAB DETAILING REPORT (EN 1992-1-1)\n" + "=" * 60 + "\n\n")
+        f.write(("MAT FOUNDATION" if is_mat() else "FLAT SLAB") + " DETAILING REPORT (EN 1992-1-1)\n" +
+                "=" * 60 + "\n\n")
+        if is_mat():
+            f.write("Mat foundation: top bars lapped over the supports, bottom bars at mid-span.\n\n")
         f.write(f"Slab area: {G.slab.area / 1e6:.1f} m2,  openings: {len(G.holes)},  "
                 f"walls (straight pieces): {len(G.walls)}\n")
         f.write(f"Columns: {len(G.columns)}  -> " + ", ".join(f"{k}: {v}" for k, v in kinds.items()) + "\n")
@@ -2907,10 +2933,24 @@ def preview(dxf_path, png_path):
 # =============================================================================
 # Main
 # =============================================================================
-def run(dxf, cfg_path, outdir):
+def run(dxf, cfg_path, outdir, structure=None):
     print(f"Reading config {cfg_path}")
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    if structure:
+        cfg["structure"] = structure
+    STRUCTURE[0] = cfg.get("structure", "flat_slab")
+    if STRUCTURE[0] not in ("flat_slab", "mat_foundation"):
+        sys.exit(f"ERROR: structure must be flat_slab or mat_foundation, not {STRUCTURE[0]!r}")
+    mat = is_mat()
+    if mat:
+        print("  MAT FOUNDATION: top bars lapped over the supports, bottom bars at mid-span")
+        if top_layout(cfg) != "mesh":
+            warn("mat foundation: only top_layout: mesh is used (top and bottom meshes)")
+        cfg["top_layout"] = "mesh"
+        if (cfg.get("integrity_bars") or {}).get("enabled"):
+            warn("mat foundation: integrity bars (EC2 9.4.1(3)) are for flat slabs - left out")
+            cfg["integrity_bars"]["enabled"] = False
     P = Params(cfg)
     print(f"Reading geometry {dxf}")
     src_doc = ezdxf.readfile(dxf)
@@ -2920,22 +2960,23 @@ def run(dxf, cfg_path, outdir):
           f"{len(G.holes)} openings")
     prefix = cfg.get("drawing", {}).get("layer_prefix", "REB_")
 
-    # midspan lines for top laps
-    mids = {d: [(a + b) / 2 for a, b in zip(G.sup_lines[d], G.sup_lines[d][1:])] for d in ("x", "y")}
-
+    # laps: flat slab - bottom over the supports, top at mid-span; mat foundation - the other way round
     bars: list[Bar] = []
     for dirn in ("x", "y"):
         spec = (cfg.get("bottom_mesh") or {}).get(dirn)
         if spec:
-            bars += gen_mesh(G, P, spec, "B", dirn, "MESH", G.sup_lines[dirn], False)
+            bars += gen_mesh(G, P, spec, "B", dirn, "MESH", G.sup_lines[dirn], mat)
         spec = (cfg.get("top_mesh") or {}).get(dirn)
         if spec and top_layout(cfg) == "mesh":
-            bars += gen_mesh(G, P, spec, "T", dirn, "MESH", G.sup_lines[dirn], True)
+            bars += gen_mesh(G, P, spec, "T", dirn, "MESH", G.sup_lines[dirn], not mat)
     bars += gen_grid_bands(G, P, cfg)
     bars += gen_top_distribution(G, P, cfg, bars)
     link_top_chains(bars)
-    bars += gen_column_bars(G, P, cfg)
-    bars += gen_wall_bars(G, P, cfg)
+    support = gen_column_bars(G, P, cfg) + gen_wall_bars(G, P, cfg)
+    if mat:                                 # under the columns / walls of a mat: bottom bars
+        for b in support:
+            b.face = "B"
+    bars += support
     bars += gen_integrity(G, P, cfg)
     bars += gen_trimmers(G, P, cfg)
     add_hooks(bars, G, P)
@@ -2959,6 +3000,8 @@ def run(dxf, cfg_path, outdir):
 
     os.makedirs(outdir, exist_ok=True)
     base = os.path.splitext(os.path.basename(dxf))[0]
+    if mat:
+        base += "_MAT"
     out_plans = os.path.join(outdir, f"{base}_REINFORCEMENT_PLANS.dxf")
     out_xls = os.path.join(outdir, f"{base}_bar_schedule.xlsx")
     out_rep = os.path.join(outdir, f"{base}_report.txt")
