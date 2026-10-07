@@ -205,6 +205,41 @@ def shapes_on_layers(ents, names, u):
     return polys
 
 
+def close_along_walls(ents, slab_names, wall_names, u, tol=10.0):
+    """A slab outline drawn the usual way, stopping at the faces of the walls and columns: the slab
+    lines and the outlines of the walls/columns (wall_names: their layers) together close it (gaps up
+    to 2 x tol are bridged). The walls and columns are part of the slab."""
+    names = {n.upper() for n in slab_names + wall_names}
+    lines = []
+    for e, lay in ents:
+        if lay.upper() not in names or e.dxftype() not in ("LINE", "ARC", "LWPOLYLINE", "POLYLINE", "SPLINE"):
+            continue
+        try:
+            pts = [(v.x * u, v.y * u) for v in ezpath.make_path(e).flattening(distance=0.5 / u)]
+        except Exception:
+            continue
+        if len(pts) >= 2:
+            lines.append(LineString(pts))
+    if not lines:
+        return []
+    walls = shapes_on_layers(ents, wall_names, u)
+    walls_u = nest(walls) if walls else Polygon()
+    blob = unary_union([ln.buffer(tol, join_style=2) for ln in lines])        # round ends bridge the gaps
+    regions = []
+    for g in getattr(blob, "geoms", [blob]):
+        for r in g.interiors:
+            pg = Polygon(r)
+            # the inside of a wall outline is not slab (free-standing walls are islands in a region)
+            if pg.area > 0.5e6 and pg.intersection(walls_u).area < 0.5 * pg.area:
+                regions.append(pg.buffer(tol, join_style=2))
+    if not regions:
+        return []
+    near = [w for w in getattr(walls_u, "geoms", [walls_u]) if not w.is_empty and
+            any(w.distance(r) < 2 * tol for r in regions)]
+    slab = unary_union(regions + near).buffer(2 * tol, join_style=2).buffer(-2 * tol, join_style=2)
+    return [g for g in getattr(slab, "geoms", [slab]) if g.area > 0.5e6]
+
+
 def points_to_supports(ents, names, u, spec, slab):
     """Support nodes of an FE model (POINT entities): points in a row with a spacing up to
     'max_spacing' form a wall (extended by half a spacing at each end), single points are columns.
@@ -300,6 +335,7 @@ class WallRect:
     thk: float
     lo: float               # extent along the long axis
     hi: float
+    core: bool = False      # piece of a closed box of walls (core)
 
 
 def rectilinear_pieces(poly: Polygon):
@@ -307,8 +343,9 @@ def rectilinear_pieces(poly: Polygon):
     coords = list(poly.exterior.coords)
     for r in poly.interiors:
         coords += list(r.coords)
-    xs = sorted({round(x, 1) for x, _ in coords})
-    ys = sorted({round(y, 1) for _, y in coords})
+    # corners drawn a fraction of a mm apart are one line: otherwise they give zero-thickness pieces
+    xs = cluster([x for x, _ in coords], 5.0)
+    ys = cluster([y for _, y in coords], 5.0)
     inside = {}
     for i in range(len(xs) - 1):
         for j in range(len(ys) - 1):
@@ -342,8 +379,7 @@ def rectilinear_pieces(poly: Polygon):
                 j = k + 1
             else:
                 j += 1
-    # merge horizontal rectangles that are stacked with identical x-range (thick walls)
-    return rects
+    return [r for r in rects if min(r.bounds[2] - r.bounds[0], r.bounds[3] - r.bounds[1]) >= 20]
 
 
 def is_orthogonal(poly: Polygon) -> bool:
@@ -403,6 +439,10 @@ class Geometry:
             sp = sp + [mesh]
             print(f"  slab read from {len(faces)} mesh elements")
         if not sp:
+            sp = close_along_walls(ents, lay("slab"), lay("walls") + lay("columns"), u)
+            if sp:
+                print("  slab outline closed along the wall faces")
+        if not sp:
             sys.exit(f"ERROR: no closed slab outline found on layer(s) {lay('slab')}. "
                      f"Check 'layers: slab' in the config.")
         slab_with_holes = nest(sp) if not faces else unary_union(sp)
@@ -435,6 +475,7 @@ class Geometry:
             pieces = rectilinear_pieces(g) if is_orthogonal(g) else [g]
             for r in pieces:
                 w = make_wallrect(len(self.walls) + 1, r)
+                w.core = len(g.interiors) > 0
                 if w.orient is None:
                     warn(f"wall near ({w.cx:.0f},{w.cy:.0f}) is not parallel to X or Y - no wall bars")
                 self.walls.append(w)
@@ -1783,8 +1824,15 @@ class Formwork:
         self.th = float(dr.get("text_height", 150))
         self.msp = doc.modelspace()
         self.tcol = int(fw.get("text_color", 7))
+        self.strip_half = defaultdict(float)       # set by slab_sections (formwork plan only)
+        self.strip_at = {}
+        self.sections = []                         # wall sections: (wall, tc, side list)
+        self.ws_cover = Polygon()                  # area covered by the wall sections
+        self._cores = None
+        self.ws_stub = float((fw.get("wall_sections") or {}).get("wall_extension", 150))
         for name, col in [("FW_WALL_HATCH", 8), ("FW_COLUMN_HATCH", 8), ("FW_SLAB_SECTION", 8),
-                          ("FW_DIM", 7), ("FW_TEXT", 7), ("FW_AXIS", 7), ("FW_OPENING", 1)]:
+                          ("FW_WALL_SECTION", 8), ("FW_DIM", 7), ("FW_TEXT", 7), ("FW_AXIS", 7),
+                          ("FW_OPENING", 1)]:
             if name not in doc.layers:
                 doc.layers.add(name, color=col)
         if "FW_DIM" not in doc.dimstyles:
@@ -1805,10 +1853,10 @@ class Formwork:
                               dxfattribs={"layer": layer, "style": "REBAR_TXT", "color": self.tcol})
         t.set_placement(self.m(at), align=getattr(ezdxf.enums.TextEntityAlignment, align))
 
-    def dim(self, p1, p2, base, angle, text_at=None):
+    def dim(self, p1, p2, base, angle, text_at=None, text="<>"):
         try:
             d = self.msp.add_linear_dim(base=self.m(base), p1=self.m(p1), p2=self.m(p2), angle=angle,
-                                        dimstyle="FW_DIM", dxfattribs={"layer": "FW_DIM"})
+                                        text=text, dimstyle="FW_DIM", dxfattribs={"layer": "FW_DIM"})
             if text_at is not None:
                 d.set_location(self.m(text_at), leader=False, relative=False)
             d.render()
@@ -1818,7 +1866,7 @@ class Formwork:
     def hatch(self, poly, layer, pattern, scale, color=256, solid_bg=None):
         polys = getattr(poly, "geoms", [poly])
         for pg in polys:
-            if pg.is_empty:
+            if pg.is_empty or pg.geom_type != "Polygon" or pg.area < 1:
                 continue
             if solid_bg is not None:
                 hb = self.msp.add_hatch(color=solid_bg, dxfattribs={"layer": layer})
@@ -1832,33 +1880,289 @@ class Formwork:
                 h.paths.add_polyline_path([self.m(c) for c in r.coords], is_closed=True, flags=0)
 
     # --- parts ----------------------------------------------------------------
-    def walls_and_columns(self):
+    def hatch_scale(self):
+        return 0.8 * self.th / self.u / 7.5        # ~3 cm pattern spacing at text height 15 cm
+
+    def hatch_elements(self, cut=None):
+        """Cross-hatch of the shear walls and columns (also used on the reinforcement plans).
+        'cut' (the wall sections) is left out of the wall hatch, so the section sits on clean ground."""
+        walls = self.G.walls_union
+        if cut is not None and not cut.is_empty and not walls.is_empty:
+            walls = walls.difference(cut)
+        if not walls.is_empty:
+            self.hatch(walls, "FW_WALL_HATCH", "ANSI37", self.hatch_scale())
+        for c in self.G.columns:
+            self.hatch(c.poly, "FW_COLUMN_HATCH", "ANSI37", self.hatch_scale())
+
+    def walls_and_columns(self, cut=None):
         G, th = self.G, self.th
-        sc = th / self.u / 7.5            # pattern scale: ~6 cm spacing at text height 15 cm
-        if not G.walls_union.is_empty:
-            self.hatch(G.walls_union, "FW_WALL_HATCH", "ANSI37", 1.6 * sc)
-        # walls: name and size  SWn length/thickness (cm)
+        self.hatch_elements(cut)
+        # walls: name and size  SWn  X-size x Y-size (cm), e.g. SW6 200X25 / SW1 25X220
         order = sorted(G.walls, key=lambda w: (-round(w.cy / 500), w.cx))
+        sec = {id(w): tc for w, tc, _ in self.sections}
         k = 0
         for w in order:
-            if w.orient is None or w.length < 3 * w.thk:
+            if w.orient is None or w.length < 3 * w.thk or self._is_core_wall(w):
                 continue
             k += 1
-            txt = f"SW{k} {w.length / 10:.0f}/{w.thk / 10:.0f}"
+            x0, y0, x1, y1 = w.poly.bounds
+            txt = f"SW{k} {(x1 - x0) / 10:.0f}X{(y1 - y0) / 10:.0f}"
+            t = (w.lo + w.hi) / 2
+            if id(w) in sec:                       # beside the wall, clear of its section
+                tc = sec[id(w)]
+                half = self.P.h / 2 + self.ws_stub
+                a, b = (w.lo, tc - half), (tc + half, w.hi)
+                t = sum(a) / 2 if a[1] - a[0] > b[1] - b[0] else sum(b) / 2
             if w.orient == "x":
-                side = 1 if self._inside((w.cx, w.cy + w.thk / 2 + 1.2 * th)) else -1
-                self.text(txt, (w.cx, w.cy + side * (w.thk / 2 + 0.9 * th)), th,
+                side = 1 if self._inside((t, w.cy + w.thk / 2 + 1.2 * th)) else -1
+                self.text(txt, (t, w.cy + side * (w.thk / 2 + 0.9 * th)), th,
                           align="BOTTOM_CENTER" if side > 0 else "TOP_CENTER")
             else:
-                side = 1 if self._inside((w.cx + w.thk / 2 + 1.2 * th, w.cy)) else -1
-                self.text(txt, (w.cx + side * (w.thk / 2 + 0.9 * th), w.cy), th, rot=90,
+                side = 1 if self._inside((w.cx + w.thk / 2 + 1.2 * th, t)) else -1
+                self.text(txt, (w.cx + side * (w.thk / 2 + 0.9 * th), t), th, rot=90,
                           align="TOP_CENTER" if side > 0 else "BOTTOM_CENTER")
+        # cores: one name in the middle
+        for hp in self._core_holes():
+            self.text("CORE", hp.representative_point().coords[0], th)
         # columns: hatch + name  Cn-b/h  or  Cn-Ød
         cols = sorted(G.columns, key=lambda c: (-round(c.cy / 500), c.cx))
         for i, c in enumerate(cols, 1):
-            self.hatch(c.poly, "FW_COLUMN_HATCH", "ANSI37", 0.8 * sc, solid_bg=None)
             size = f"Ø{c.wx / 10:.0f}" if c.round else f"{c.wx / 10:.0f}/{c.wy / 10:.0f}"
             self.text(f"C{i}-{size}", (c.cx, c.cy - c.wy / 2 - 0.5 * th), 0.9 * th, align="TOP_CENTER")
+
+    # --- sections through the shear walls ---------------------------------------
+    def _core_holes(self):
+        """Cores: the inside of a closed box of walls, or an opening walled on most of its perimeter."""
+        if self._cores is None:
+            G = self.G
+            boxes = [Polygon(r) for g in getattr(G.walls_union, "geoms", [G.walls_union])
+                     if not g.is_empty for r in g.interiors]
+            near = G.walls_union.buffer(30) if not G.walls_union.is_empty else Polygon()
+            walled = [hole for hole in G.holes if not near.is_empty and
+                      hole.exterior.intersection(near).length >= 0.5 * hole.exterior.length]
+            self._cores = boxes + [hp for hp in walled if not any(b.buffer(10).contains(hp) for b in boxes)]
+        return self._cores
+
+    def _is_core_wall(self, w):
+        return w.core or any(w.poly.distance(hp) < 30 for hp in self._core_holes())
+
+    @staticmethod
+    def _wave(s_at, r0, r1, amp, over=0.0, n=16):
+        """Break line across a bar end: one sine wave from r0 to r1 (optionally running on a bit)."""
+        out = []
+        lo, hi = -over, 1 + over
+        for k in range(n + 1):
+            f = lo + (hi - lo) * k / n
+            out.append((s_at + amp * math.sin(2 * math.pi * f), r0 + f * (r1 - r0)))
+        return out
+
+    def _bar(self, s0, s1, r0, r1, wave0, wave1):
+        """Outline (s, r) of a bar from s0 to s1, width r0..r1, with wavy (broken) ends where asked."""
+        amp = 0.15 * (r1 - r0)
+        e1 = self._wave(s1, r0, r1, amp) if wave1 else [(s1, r0), (s1, r1)]
+        e0 = self._wave(s0, r0, r1, amp)[::-1] if wave0 else [(s0, r1), (s0, r0)]
+        return e1 + e0
+
+    def wall_sections(self):
+        """A section through every shear wall, laid flat on the wall as on the drawings: the slab
+        (grey, as thick as the slab) runs across the wall, the wall (grey, as thick as the wall) shows
+        above and below the slab, all ends broken off with wavy lines. Slab on both sides = cross,
+        slab on one side only (edge walls, core walls) = T. With the slab thickness, the level of the
+        slab on its top face, and the wall thickness from the axis. Returns the area covered."""
+        G, P, th = self.G, self.P, self.th
+        ws = self.fw.get("wall_sections") or {}
+        if not ws.get("enabled", True):
+            return Polygon()
+        h = P.h
+        ext = float(ws.get("slab_extension", 450))         # slab shown beyond each wall face
+        stub = self.ws_stub
+        cols = [c.poly for c in G.columns]
+        lvl = self.fw.get("section_level") or self.fw.get("level") or ""
+        lvl = (lvl[0] + " " + lvl[1:].lstrip()) if lvl and lvl[0] in "+-±" else lvl
+        cover = []
+        for w in G.walls:
+            if w.orient is None or w.length < h + 2 * stub:
+                continue
+            others = unary_union([x.poly for x in G.walls if x is not w] + cols)
+            n0, n1 = (w.cx - w.thk / 2, w.cx + w.thk / 2) if w.orient == "y" else \
+                     (w.cy - w.thk / 2, w.cy + w.thk / 2)
+            xy = (lambda s_, r_: (s_, r_)) if w.orient == "y" else (lambda s_, r_: (r_, s_))   # (n, t) -> (x, y)
+            L = w.length
+            best = None
+            for tc in (w.lo + L / 3, w.lo + 2 * L / 3, w.lo + L / 2):
+                tc = min(max(tc, w.lo + h / 2 + stub), w.hi - h / 2 - stub)
+                sides = []
+                for sd in (-1, 1):
+                    face = n0 if sd < 0 else n1
+                    probe = Point(*xy(face + sd * min(200, ext / 2), tc))
+                    if not G.slab.contains(probe) or others.contains(probe):
+                        continue
+                    for e in (ext, 0.6 * ext):
+                        a, b = sorted((face, face + sd * e))
+                        rect = Polygon([xy(a, tc - h / 2 - 50), xy(b, tc - h / 2 - 50),
+                                        xy(b, tc + h / 2 + 50), xy(a, tc + h / 2 + 50)])
+                        if G.slab.buffer(5).contains(rect) and not rect.intersects(others.buffer(-1)):
+                            sides.append((sd, e))
+                            break
+                if sides and (best is None or len(sides) > len(best[1])):
+                    best = (tc, sides)
+                if best and len(best[1]) == 2:
+                    break
+            if best is None:
+                continue
+            tc, sides = best
+            self.sections.append((w, tc, sides))
+            # slab strip (s = n across the wall, r = t along it) and wall stub (s = t, r = n)
+            e_lo = dict(sides).get(-1)
+            e_hi = dict(sides).get(1)
+            s0 = n0 - e_lo if e_lo else (n0 + n1) / 2
+            s1 = n1 + e_hi if e_hi else (n0 + n1) / 2
+            strip = [xy(a, b) for a, b in self._bar(s0, s1, tc - h / 2, tc + h / 2, bool(e_lo), bool(e_hi))]
+            t0, t1 = tc - h / 2 - stub, tc + h / 2 + stub
+            wall = [xy(b, a) for a, b in self._bar(t0, t1, n0, n1, True, True)]
+            shape = unary_union([Polygon(strip).buffer(0), Polygon(wall).buffer(0)])
+            cover.append(shape)
+            for pg in getattr(shape, "geoms", [shape]):
+                hb = self.msp.add_hatch(color=8, dxfattribs={"layer": "FW_WALL_SECTION"})
+                hb.set_solid_fill(color=8)
+                hb.paths.add_polyline_path([self.m(c) for c in pg.exterior.coords], is_closed=True)
+                self.msp.add_lwpolyline([self.m(c) for c in pg.exterior.coords], close=True,
+                                        dxfattribs={"layer": "FW_WALL_SECTION", "lineweight": 50})
+            # break lines run on a little past the outline, as drawn by hand
+            amp_s, amp_w = 0.15 * h, 0.15 * w.thk
+            ends = [(s_, tc - h / 2, tc + h / 2, amp_s, False) for s_, e_ in ((s0, e_lo), (s1, e_hi)) if e_]
+            ends += [(t_, n0, n1, amp_w, True) for t_ in (t0, t1)]
+            for s_, r0, r1, amp, flip in ends:
+                pts = self._wave(s_, r0, r1, amp, over=0.15)
+                pts = [xy(b, a) if flip else xy(a, b) for a, b in pts]
+                self.msp.add_lwpolyline([self.m(c) for c in pts],
+                                        dxfattribs={"layer": "FW_WALL_SECTION", "lineweight": 25})
+            # slab thickness, just beyond the broken end of the slab on the first slab side
+            sd, e = sides[0]
+            face = n0 if sd < 0 else n1
+            end = face + sd * (e + 1.1 * th)
+            p1, p2 = xy(face, tc - h / 2), xy(face, tc + h / 2)
+            self.dim(p1, p2, xy(end, tc - h / 2), 90 if w.orient == "y" else 0)
+            # level of the slab: triangle on the top face, leader and level text
+            if lvl:
+                top, out = (tc + h / 2, 1) if w.orient == "y" else (tc - h / 2, -1)
+                na, tri = face + sd * 0.45 * e, 0.57 * th
+                self.level_mark(xy, na, top, out, -sd, tri, lvl, w.orient)
+        return unary_union(cover) if cover else Polygon()
+
+    def level_mark(self, xy, na, top, out, to_wall, tri, txt, orient):
+        """Level symbol: triangle with its point on the top face of the slab (half filled, the filled
+        half towards the wall), a leader out of the slab and along it, the level written on it."""
+        th = self.th
+        apex, base = xy(na, top), top + out * tri
+        left, right = xy(na - tri, base), xy(na + tri, base)
+        mid = xy(na, base)
+        lay = {"layer": "FW_WALL_SECTION"}
+        self.msp.add_lwpolyline([self.m(apex), self.m(left), self.m(right)], close=True, dxfattribs=lay)
+        half = [apex, xy(na + to_wall * tri, base), mid]
+        hb = self.msp.add_hatch(color=7, dxfattribs=lay)
+        hb.set_solid_fill(color=7)
+        hb.paths.add_polyline_path([self.m(c) for c in half], is_closed=True)
+        far = na - to_wall * 5 * th
+        knee = top + out * th
+        self.msp.add_lwpolyline([self.m(apex), self.m(xy(na, knee)), self.m(xy(far, knee))], dxfattribs=lay)
+        # text on the leader, starting at its far end and reading towards the wall
+        at = xy(far, knee + out * 0.25 * th)
+        self.text(txt, at, 4 / 3 * th, rot=0 if orient == "y" else 90,
+                  align="BOTTOM_LEFT" if to_wall > 0 else "BOTTOM_RIGHT",
+                  layer="FW_WALL_SECTION")
+
+    # --- dimensions of every element ----------------------------------------------
+    def dim_chain(self, pts, at, horiz, sg):
+        """Dimension chain through the points pts (along X if horiz, else along Y), with its line
+        0.8 x text height beyond 'at' on side sg. Values to 0.5 cm (12.5). A text that does not fit
+        between its extension lines goes outside: the first one before the chain, the last one after
+        it, the ones in between one row further out."""
+        th = self.th
+        unit = UNIT_MM.get(self.cfg.get("drawing", {}).get("dimension_unit", "cm"), 10.0)
+        line = at + sg * 0.8 * th
+        segs = [(a, b) for a, b in zip(pts, pts[1:]) if b - a > 1]
+        for i, (a, b) in enumerate(segs):
+            v = round((b - a) / unit * 2) / 2
+            txt = f"{v:.0f}" if v == int(v) else f"{v:.1f}"
+            tw = 0.75 * 1.2 * th * len(txt)
+            text_at = None
+            if b - a < tw + 0.4 * th:
+                row = 0.9 * th
+                if i == len(segs) - 1:
+                    tpos = b + 0.3 * th + tw / 2
+                elif i == 0:
+                    tpos = a - 0.3 * th - tw / 2
+                else:
+                    tpos, row = (a + b) / 2, 0.9 * th + 1.5 * th * sg * (1 if horiz else -1)
+                text_at = (tpos, line + row) if horiz else (line - row, tpos)
+            if horiz:
+                self.dim((a, at), (b, at), (a, line), 0, text_at=text_at, text=txt)
+            else:
+                self.dim((at, a), (at, b), (line, a), 90, text_at=text_at, text=txt)
+        return len(segs)
+
+    def element_dimensions(self):
+        """Every wall, column and opening dimensioned on its own: wall thickness and column sizes split
+        at the axes running through them (face - axis - face), wall lengths where no grid line runs
+        along the wall, opening sizes."""
+        G, th = self.G, self.th
+        xs, ys, _ = self.grid()
+        sec = {id(w): tc for w, tc, _ in self.sections}
+        holes = self._core_holes()
+
+        def chain(lo, hi, axes):
+            return [lo] + [a for a in sorted(axes) if lo + 5 < a < hi - 5] + [hi]
+
+        def free(p):
+            q = Point(*p)
+            return self._inside(p) and not G.walls_union.contains(q) and \
+                not any(c.poly.contains(q) for c in G.columns)
+        n = 0
+        for w in G.walls:
+            if w.orient is None:
+                continue
+            x0, y0, x1, y1 = w.poly.bounds
+            # thickness, at the wall end next to its section (or the other end if that one is not free)
+            if w.orient == "y":
+                ends = [(y0, -1), (y1, 1)]
+                if id(w) in sec and sec[id(w)] > (y0 + y1) / 2:
+                    ends.reverse()
+                for e, sg in ends:
+                    if free((w.cx, e + sg * 1.2 * th)):
+                        n += self.dim_chain(chain(x0, x1, xs), e, True, sg)
+                        break
+            else:
+                ends = [(x0, -1), (x1, 1)]
+                if id(w) in sec and sec[id(w)] > (x0 + x1) / 2:
+                    ends.reverse()
+                for e, sg in ends:
+                    if free((e + sg * 1.2 * th, w.cy)):
+                        n += self.dim_chain(chain(y0, y1, ys), e, False, sg)
+                        break
+            # length, where no grid line runs along the wall (the grid chains already give it there)
+            along = xs if w.orient == "y" else ys
+            lo_, hi_ = (x0, x1) if w.orient == "y" else (y0, y1)
+            if w.length >= 3 * w.thk and not any(lo_ - 1 <= a <= hi_ + 1 for a in along):
+                if w.orient == "x":
+                    sg = -1 if free((w.cx, y0 - 1.5 * th)) else 1
+                    n += self.dim_chain([x0, x1], y0 if sg < 0 else y1, True, sg)
+                else:
+                    sg = 1 if free((x1 + 1.5 * th, w.cy)) else -1
+                    n += self.dim_chain([y0, y1], x1 if sg > 0 else x0, False, sg)
+        for c in G.columns:
+            x0, y0, x1, y1 = c.poly.bounds
+            sg = 1 if free((c.cx, y1 + 1.2 * th)) else -1       # across X, above (or below) the column
+            n += self.dim_chain(chain(x0, x1, xs), y1 if sg > 0 else y0, True, sg)
+            sg = 1 if free((x1 + 1.2 * th, c.cy)) else -1       # across Y, right (or left) of the column
+            n += self.dim_chain(chain(y0, y1, ys), x1 if sg > 0 else x0, False, sg)
+        for hole in G.holes:
+            if any(hp.buffer(10).contains(hole) for hp in holes):
+                continue                                  # the void inside a core: walls dimension it
+            x0, y0, x1, y1 = hole.bounds
+            n += self.dim_chain([x0, x1], y0, True, 1)       # inside the opening, along two sides
+            n += self.dim_chain([y0, y1], x0, False, 1)
+        return n
 
     def _inside(self, p):
         return self.G.slab.buffer(-10).contains(Point(*p))
@@ -1872,7 +2176,8 @@ class Formwork:
                     if g.geom_type == "LineString" and g.length > 0:
                         self.msp.add_line(self.m(g.coords[0]), self.m(g.coords[-1]),
                                           dxfattribs={"layer": "FW_OPENING"})
-            self.text("OPENING", hole.representative_point().coords[0], 0.9 * self.th)
+            if not any(hp.buffer(10).contains(hole) for hp in self._core_holes()):
+                self.text("OPENING", hole.representative_point().coords[0], 0.9 * self.th)
 
     def grid(self):
         """Axis positions: drawn axes if present, otherwise the column lines."""
@@ -1889,7 +2194,8 @@ class Formwork:
         h = P.h
         xs, ys, _ = self.grid()
         solid = G.slab.buffer(-100)
-        blocked = unary_union([G.walls_union.buffer(150)] + [c.poly.buffer(150) for c in G.columns])
+        blocked = unary_union([G.walls_union.buffer(150)] + [c.poly.buffer(150) for c in G.columns] +
+                              [self.ws_cover.buffer(300 + 3 * th)])     # incl. its thickness dimension
         placed = 0
         self.strip_half = defaultdict(float)     # (grid line dirn, coordinate) -> half length of its strips
         self.strip_at = {}                       # (grid line dirn, coordinate) -> positions of its strips
@@ -2067,7 +2373,6 @@ class Formwork:
         self.text("LEGEND", (x, y), 1.4 * th, align="MIDDLE_LEFT")
         items = [("FW_WALL_HATCH", "ANSI37", "Shear wall"), ("FW_COLUMN_HATCH", "ANSI37", "Column"),
                  ("FW_SLAB_SECTION", "SOLID", f"R.C. slab section (h = {P.h / 10:.0f} cm)")]
-        sc = th / self.u / 7.5
         for k, (layer, pat, lab) in enumerate(items):
             yy = y - (3 + 2.5 * k) * th
             sw = box(x, yy - 0.6 * th, x + 5 * th, yy + 0.6 * th)
@@ -2076,7 +2381,7 @@ class Formwork:
                 hb.set_solid_fill(color=8)
                 hb.paths.add_polyline_path([self.m(c) for c in sw.exterior.coords], is_closed=True)
             else:
-                self.hatch(sw, layer, pat, (1.6 if k == 0 else 0.8) * sc)
+                self.hatch(sw, layer, pat, self.hatch_scale())
             self.msp.add_lwpolyline([self.m(c) for c in sw.exterior.coords], close=True,
                                     dxfattribs={"layer": "FW_TEXT"})
             self.text(lab, (x + 6 * th, yy), th, align="MIDDLE_LEFT")
@@ -2090,13 +2395,16 @@ class Formwork:
             self.text(n, (x, y - (12 + 1.8 * k) * th), (1.2 if k == 0 else 1.0) * th, align="MIDDLE_LEFT")
 
     def draw(self):
-        self.walls_and_columns()
+        self.ws_cover = self.wall_sections()
+        self.walls_and_columns(cut=self.ws_cover)
         self.openings()
         n = self.slab_sections()
         if n == 0:
             warn("formwork plan: no free place found for the slab section symbols")
         if self.fw.get("internal_dimensions", True):
             self.internal_dimensions()
+        if self.fw.get("element_dimensions", True):
+            self.element_dimensions()
         self.axes_and_dimensions()
         self.legend_and_notes(self.fw.get("title", "FORMWORK PLAN"))
 
@@ -2115,6 +2423,10 @@ def plan_wanted(g, plan):
 
 
 def draw_plan(doc, groups, chains, cfg, P, G, laps, plan, off):
+    dc = cfg.get("drawing", {})
+    fwp = Formwork(doc, cfg, P, G, off)
+    if dc.get("hatch_on_plans", True):
+        fwp.hatch_elements()                 # walls and columns hatched as on the formwork plan
     dr = Drawer(doc, cfg, P, G, off)
     if dr.show_range:
         dr.plan_ranges([g for g in groups if plan_wanted(g, plan)])
@@ -2130,10 +2442,14 @@ def draw_plan(doc, groups, chains, cfg, P, G, laps, plan, off):
             dr.draw_ubar_group(g)
         elif g.kind == "perim":
             dr.draw_perim(g)
-    if cfg.get("drawing", {}).get("axes_on_plans", True):
-        # the same axes and bubbles as on the formwork plan (optionally with its outer dimensions)
-        Formwork(doc, cfg, P, G, off).axes_and_dimensions(
-            with_dims=bool(cfg.get("drawing", {}).get("axis_dimensions_on_plans", False)))
+    # the dimensions of the formwork plan, on every reinforcement plan too
+    if dc.get("internal_dimensions_on_plans", True):
+        fwp.internal_dimensions()
+    if dc.get("element_dimensions_on_plans", True):
+        fwp.element_dimensions()
+    if dc.get("axes_on_plans", True):
+        # the same axes and bubbles as on the formwork plan (with its outer dimension chains)
+        fwp.axes_and_dimensions(with_dims=bool(dc.get("axis_dimensions_on_plans", True)))
     dr.notes(P, laps, face=plan[0], title=PLAN_TITLES[plan])
 
 

@@ -4,7 +4,7 @@ FLAT SLAB DETAILING REPORT (EN 1992-1-1)
 Slab area: 455.1 m2,  openings: 2,  walls (straight pieces): 17
 Columns: 12  -> internal: 6, corner: 5, edge: 1
 Support lines X: 338, 800, 3400, 4333, 6574, 8248, 10000, 16387
-Support lines Y: 225, 6538, 9875, 11075, 13238, 13850, 14400, 19588, 23800, 28400
+Support lines Y: 225, 6538, 9875, 11075, 13237, 13850, 14400, 19588, 23800, 28400
 
 Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
 h=240, c_bot=20, c_top=30, d=198 mm

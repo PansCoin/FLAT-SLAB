@@ -9,7 +9,8 @@
 units: cm                 # units of the DXF drawing: mm | cm | m
 
 layers:                   # layer names in YOUR drawing (one name or a list)
-  slab:     [SLAB]        # closed outline of the slab (polyline, or lines that close)
+  slab:     [SLAB, SLAB OUTLINE]   # slab outline: closed, or lines that close (also lines that stop at
+                                   # the faces of the walls/columns - the walls and columns then close it)
   openings: [OPENING]     # closed outlines of holes/voids (holes drawn on the slab layer also work)
   columns:  [COLUMN]      # closed polylines (rectangular) or circles (round); blocks are exploded
   walls:    [WALL]        # closed outlines of shear walls / core (L-, U- and box shapes are fine)
@@ -129,6 +130,13 @@ formwork:                 # an extra drawing (above the reinforcement plans) wit
   level: "+7.20"          # slab level written after the title; leave "" if not wanted
   scale: 50
   internal_dimensions: true   # dimension chains inside the slab along the grid lines (through columns/walls)
+  element_dimensions: true    # every wall/column on its own: thickness/sizes split at the axes (12.5|12.5),
+                              # wall lengths off the grid lines, opening sizes
+  wall_sections:              # a section through every shear wall, laid flat on the wall (cross / T shape)
+    enabled: true
+    slab_extension: 450       # slab shown beyond each wall face (mm)
+    wall_extension: 150       # wall shown above and below the slab (mm)
+  section_level: ""           # level written on the wall sections, e.g. "+5.90"; "" = the level above
   text_color: 7
   notes: []               # extra note lines, e.g. ["Exposure class XC1"]
 
@@ -151,7 +159,10 @@ drawing:
   bar_notes: true         # text under every bar: number_of_bars Φ dia x length / spacing, e.g. 7Φ12x458/20
                           # number of bars = distribution dimension / spacing
   axes_on_plans: true     # axis lines and bubbles (1, 2, 3 … / A, B, C …) on the reinforcement plans too
-  axis_dimensions_on_plans: false   # true = also the outer dimension chains of the formwork plan
+  axis_dimensions_on_plans: true    # the outer dimension chains of the formwork plan on the reinforcement plans
+  internal_dimensions_on_plans: true   # the chains along the grid lines on the reinforcement plans
+  element_dimensions_on_plans: true    # the wall/column/opening dimensions on the reinforcement plans
+  hatch_on_plans: true    # walls and columns cross-hatched on the reinforcement plans too
   distribution_dimensions: true   # dimension across every bar group: width of the area it reinforces
   label_mode: length      # length = each bar shows only its own length (live, from the dimension)
                           # full   = mark, number of bars, Ø, length, spacing (e.g. N23 39ф12x<>/20)

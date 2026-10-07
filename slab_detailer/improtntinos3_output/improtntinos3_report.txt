@@ -28,9 +28,9 @@ Checks
     Over corner columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
 
 Steel quantities
-  ф12     5295.0 m     4701.0 kg
-  ф14     5346.9 m     6461.3 kg
-  TOTAL       11162.3 kg   (23.8 kg/m2)
+  ф12     5295.1 m     4701.0 kg
+  ф14     5347.0 m     6461.3 kg
+  TOTAL       11162.4 kg   (23.8 kg/m2)
 
 Warnings
   - none

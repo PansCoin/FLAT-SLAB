@@ -16,7 +16,7 @@ In AutoCAD, save the drawing as **DXF** (SAVEAS → DXF, 2010 or 2013). Only fou
 
 | What | How it can be drawn |
 |---|---|
-| Slab outline | closed polyline, or lines/arcs that close |
+| Slab outline | closed polyline, or lines/arcs that close. It may also stop at the wall and column faces, as usually drawn: the wall and column outlines then close it |
 | Openings | closed polylines (holes drawn on the slab layer also work) |
 | Columns | rectangles, circles, blocks or hatches |
 | Walls / core | closed outlines or hatches; L, U and box shapes are fine |
@@ -91,13 +91,27 @@ Each plan has a title and a notes block with the lap lengths for that face.
 
 A fifth drawing, the **formwork plan**, sits above the four reinforcement plans (switch it off with `formwork: enabled: false`). It shows:
 
-- **Shear walls:** cross-hatched, with name and size, e.g. `SW1 250/40` (length/thickness in cm).
+- **Shear walls:** cross-hatched, with name and size in X and Y, e.g. `SW6 200X25` or `SW1 25X220` (cm). The name sits beside the wall, clear of its section.
+- **Cores:** a closed box of walls, or an opening walled on most of its sides, is named `CORE`. Its walls get no SW names.
 - **Columns:** cross-hatched, with name and size, e.g. `C3-50/50` or `C9-Ø50`.
+- **Walls and columns** use the same hatch (ANSI37, about 3 cm spacing at 1:50).
 - **Openings:** crossed out.
+- **Wall sections:** a section through every shear wall, laid flat on the wall. The slab (grey, as thick as the slab) runs across the wall, and the wall (grey, as thick as the wall) shows 15 cm above and below the slab. All ends are broken off with wavy lines.
+  - Slab on both sides of the wall gives a cross; slab on one side only (edge walls, core walls) gives a T.
+  - Each section has the slab thickness (`24`) and a level mark on the top face of the slab (`+ 7.20`). The level is `formwork: section_level`, or `formwork: level` when that is empty.
+  - For walls along X the section is turned 90°, so the top of the slab faces left.
+  - The section sits a third of the way along the wall; the wall hatch is left out under it.
+  - Settings: `formwork: wall_sections` (`enabled`, `slab_extension` 450 mm, `wall_extension` 150 mm).
 - **R.C. slab sections:** grey strips as wide as the slab thickness, with a thickness dimension (e.g. `24`). There is one at mid-span on every grid line.
 - **Axes:** bubbles 1, 2, 3 … and A, B, C …, read from the axis layer (`layers: axes`).
 - **Dimensions:** chains slab edge – axes – slab edge, plus the overall size, on all four sides.
 - **Internal dimensions** along every grid line, drawn on the line itself so they pass through the columns and shear walls: slab edge – element face – element width – clear span – … – slab edge (`internal_dimensions`).
+- **Element dimensions** (`element_dimensions`):
+  - every wall's thickness at one end, split at the axis through it (e.g. `12.5 | 12.5`, or `10 | 30` for an off-axis wall)
+  - every column in X and Y, split at the axes (e.g. `30 | 20` and `15 | 35`)
+  - wall lengths where no grid line runs along the wall
+  - opening sizes
+  - a text that does not fit between its extension lines is moved outside the chain
 - **Title, level, scale, legend and notes.** The notes include "Slab thickness h = 24 cm", concrete, steel and covers.
 
 The slab thickness comes from `slab: thickness` (240 = 24 cm). The level and title come from the `formwork:` section of the config.
@@ -116,12 +130,15 @@ Notes:
 - Bars of a variable-length group keep a fixed label such as `(377÷413)`.
 - Set `bar_style: polyline` to go back to polylines.
 
-### Axes on the reinforcement plans
+### Axes, hatch and dimensions on the reinforcement plans
 
-The four reinforcement plans show the same axis lines and bubbles (1, 2, 3 … / A, B, C …) as the formwork plan. Settings:
+The four reinforcement plans show the same axes, hatching and dimensions as the formwork plan. Each can be switched off under `drawing:`:
 
-- `axes_on_plans` turns them on or off.
-- `axis_dimensions_on_plans: true` also adds the outer dimension chains.
+- `axes_on_plans`: axis lines and bubbles (1, 2, 3 … / A, B, C …)
+- `axis_dimensions_on_plans`: the outer dimension chains
+- `internal_dimensions_on_plans`: the chains along the grid lines
+- `element_dimensions_on_plans`: the wall, column and opening dimensions
+- `hatch_on_plans`: walls and columns cross-hatched
 
 ### Lap dimensions
 
@@ -182,6 +199,9 @@ The dimensions are in cm by default (`dimension_unit` in the config). The bars a
 | `REB_UBAR` | free-edge U-bars |
 | `REB_PUNCH` | punching perimeters u1 |
 | `REB_NOTES` | plan title and generated notes |
+| `FW_WALL_HATCH`, `FW_COLUMN_HATCH` | wall and column hatching (formwork and reinforcement plans) |
+| `FW_WALL_SECTION` | sections through the shear walls, with their level marks |
+| `FW_DIM` | formwork dimensions (also on the reinforcement plans) |
 
 Turn layers on and off to make your sheets.
 

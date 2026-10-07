@@ -36,7 +36,7 @@ Warnings
   - column 22 at (21800,5600) is 424 mm from opening 1 (< 6d = 1188 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
 
 Files
-  sample_slab_output/sample_slab_REINFORCEMENT_PLANS.dxf
-  sample_slab_output/sample_slab_bar_schedule.xlsx
-  sample_slab_output/sample_slab_report.txt
-  sample_slab_output/sample_slab_REINFORCEMENT_PLANS.png
+  sample_output/sample_slab_REINFORCEMENT_PLANS.dxf
+  sample_output/sample_slab_bar_schedule.xlsx
+  sample_output/sample_slab_report.txt
+  sample_output/sample_slab_REINFORCEMENT_PLANS.png

@@ -1,10 +1,10 @@
 FLAT SLAB DETAILING REPORT (EN 1992-1-1)
 ============================================================
 
-Slab area: 200.7 m2,  openings: 2,  walls (straight pieces): 16
+Slab area: 200.7 m2,  openings: 2,  walls (straight pieces): 13
 Columns: 4  -> internal: 3, edge: 1
 Support lines X: 1595, 2846, 4795, 6005, 8281, 10155, 13545
-Support lines Y: 3, 6165, 7580, 9290, 10024, 12348, 15548
+Support lines Y: 3, 6165, 7548, 9290, 10024, 12348, 15548
 
 Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
 h=240, c_bot=20, c_top=30, d=198 mm
@@ -28,9 +28,9 @@ Checks
     Over corner columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
 
 Steel quantities
-  ф12     2158.9 m     1916.7 kg
+  ф12     2158.7 m     1916.5 kg
   ф14     2209.7 m     2670.3 kg
-  TOTAL        4586.9 kg   (22.9 kg/m2)
+  TOTAL        4586.8 kg   (22.9 kg/m2)
 
 Warnings
   - column 2 at (10155,9373) is 0 mm from opening 1 (< 6d = 1188 mm): reduce u1 for punching (EC2 6.4.2(3), Fig. 6.14)
