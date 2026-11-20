@@ -180,5 +180,6 @@ drawing:
   axis_to_bar_end_dimensions: true   # at every lap: dimension from the closest axis to the end of the bar
   distribution_lines: false   # true = draw the distribution line with ticks for each bar group
   notes: false            # true = notes block (materials, covers, lap lengths) above each plan
+  schedule_in_dxf: true   # bar schedule, steel summary, lap lengths and notes drawn in the DXF too
   separate_plan_files: false   # true = also write each of the 4 plans as its own DXF
   preview_png: true       # also writes a PNG preview of the plans

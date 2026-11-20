@@ -57,7 +57,7 @@ python slab_detailer.py my_slab.dxf -o output
 
 ## 5. What you get (in `output/`)
 
-The formwork plan and all four reinforcement plans are in **one DXF**, laid out 2 × 2:
+Everything is in **one DXF**: the formwork plan, the four reinforcement plans, and, beside the formwork plan, the bar schedule, the steel summary per Ø, the anchorage/lap lengths and the detailing notes (`schedule_in_dxf`). The DXF opens zoomed to show all of it. The four reinforcement plans are laid out 2 × 2:
 
 | | left | right |
 |---|---|---|

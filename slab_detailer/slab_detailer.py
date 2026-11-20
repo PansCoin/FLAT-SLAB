@@ -2723,20 +2723,150 @@ def formwork_enabled(cfg):
     return bool((cfg.get("formwork") or {}).get("enabled", True))
 
 
-def write_plans(src, out, groups, chains, cfg, P, G, laps):
-    """One DXF containing the formwork plan and the four reinforcement plans."""
+def _table(msp, x, y, title, cols, rows, th, u, bold_last=False):
+    """A drawn table (lines + texts) with its top-left corner at (x, y) in mm. cols: (heading, width in
+    text heights, align L/C/R). Returns the bottom y."""
+    h = 0.9 * th
+    rh = 1.8 * th
+    lay = {"layer": "SCHEDULE", "style": "REBAR_TXT", "color": 7}
+    widths = [w * th for _, w, _ in cols]
+    W = sum(widths)
+    t = msp.add_text(title, height=1.3 * th / u, dxfattribs=lay)
+    t.set_placement(((x) / u, (y + 0.6 * th) / u), align=ezdxf.enums.TextEntityAlignment.BOTTOM_LEFT)
+    allrows = [[c[0] for c in cols]] + rows
+    ys = [y - k * rh for k in range(len(allrows) + 1)]
+    for k, yy in enumerate(ys):               # horizontal lines (heading and last row heavier)
+        lw = 50 if k in (0, 1, len(ys) - 1) or (bold_last and k == len(ys) - 2) else 18
+        msp.add_line((x / u, yy / u), ((x + W) / u, yy / u), dxfattribs={"layer": "SCHEDULE", "lineweight": lw})
+    xx = x
+    for w in [0] + widths:                    # vertical lines
+        xx += w
+        msp.add_line((xx / u, ys[0] / u), (xx / u, ys[-1] / u),
+                     dxfattribs={"layer": "SCHEDULE", "lineweight": 50 if w in (0,) or xx >= x + W - 1 else 18})
+    for k, row in enumerate(allrows):
+        cy = ys[k] - rh / 2
+        cx = x
+        for (_, w, al), cell in zip(cols, row):
+            w *= th
+            at = {"L": (cx + 0.4 * th, "MIDDLE_LEFT"), "C": (cx + w / 2, "MIDDLE_CENTER"),
+                  "R": (cx + w - 0.4 * th, "MIDDLE_RIGHT")}[al if k else "C"]
+            tt = msp.add_text(str(cell), height=h / u, dxfattribs=lay)
+            tt.set_placement((at[0] / u, cy / u), align=getattr(ezdxf.enums.TextEntityAlignment, at[1]))
+            cx += w
+    return ys[-1]
+
+
+def draw_schedule(doc, x0, y_top, groups, cfg, P, G, laps, chk_lines, per=60):
+    """Bar schedule, steel summary per Ø and detailing notes drawn in the DXF (to the right of the plans),
+    so the one file holds every drawing; the xlsx and txt files carry the same data."""
+    th = float(cfg.get("drawing", {}).get("text_height", 150))
+    u = G.u
+    msp = doc.modelspace()
+    if "SCHEDULE" not in doc.layers:
+        doc.layers.add("SCHEDULE", color=7)
+    sym = cfg.get("drawing", {}).get("dia_symbol", "Φ")
+    rows = [g for g in groups if g.kind in ("bar", "ubar")]
+    rows.sort(key=lambda g: (int(g.mark[1:]), g.face, g.dirn))
+    fam_mat = {"COL": "Under column", "WALL": "Under wall"} if is_mat() else {}
+    data, tot_len, tot_kg = [], defaultdict(float), defaultdict(float)
+    for g in rows:
+        L = g.n * g.length / 1000
+        kg = L * kg_per_m(g.dia)
+        tot_len[g.dia] += L
+        tot_kg[g.dia] += kg
+        var = g.geom.get("var")
+        lab = (f"{g.n}{sym}{g.dia}x({var[0] / 10:.0f}÷{var[1] / 10:.0f})/{g.step / 10:.0f}" if var
+               else f"{g.n}{sym}{g.dia}x{g.length / 10:.0f}/{g.step / 10:.0f}")
+        data.append([g.mark, fam_mat.get(g.fam) or FAM_NAMES.get(g.fam, g.fam), "Top" if g.face == "T" else "Bottom",
+                     g.dirn.upper() if g.kind == "bar" else "edge", f"{sym}{g.dia}",
+                     g.shape + (" var." if var else ""), f"{g.length / 10:.0f}", g.n, f"{L:.1f}", f"{kg:.1f}", lab])
+    cols = [("Mark", 4, "C"), ("Family", 11, "L"), ("Face", 5.5, "C"), ("Dir.", 4, "C"), ("Ø", 4, "C"),
+            ("Shape", 8, "C"), ("L (cm)", 5.5, "R"), ("No.", 4.5, "R"), ("Total (m)", 7, "R"),
+            ("Weight (kg)", 8, "R"), ("Label", 16, "L")]
+    width = sum(w for _, w, _ in cols) * th
+    what = "MAT FOUNDATION" if is_mat() else "FLAT SLAB"
+    x = x0
+    for k in range(0, max(len(data), 1), per):
+        part = data[k:k + per]
+        ttl = f"BAR SCHEDULE - {what}" + (f" ({k // per + 1})" if len(data) > per else "")
+        _table(msp, x, y_top, ttl, cols, part, th, u)
+        x += width + 6 * th
+    # summary per Ø + total, lap / anchorage lengths, notes - under each other in the next column
+    y = y_top
+    area = G.slab.area / 1e6
+    srows = [[f"{sym}{d}", f"{tot_len[d]:.1f}", f"{kg_per_m(d):.3f}", f"{tot_kg[d]:.1f}"] for d in sorted(tot_kg)]
+    tw = sum(tot_kg.values())
+    srows.append(["TOTAL", f"{sum(tot_len.values()):.1f}", "", f"{tw:.1f}"])
+    srows.append([f"{tw / area:.1f} kg/m2", f"{area:.1f} m2", "", ""])
+    y = _table(msp, x, y, "STEEL SUMMARY", [("Ø", 9, "C"), ("Total (m)", 8, "R"), ("kg/m", 6, "R"),
+                                              ("Weight (kg)", 8, "R")], srows, th, u, bold_last=True) - 5 * th
+    lrows = []
+    for d in sorted(laps):
+        for face in ("B", "T"):
+            e1, fbd, lbr = P.bond(d, face)
+            lrows.append([f"{sym}{d}", "bottom" if face == "B" else "top", f"{e1:.1f}", f"{lbr:.0f}",
+                          f"{P.lbd(d, face):.0f}", f"{P.lap(d, face):.0f}"])
+    y = _table(msp, x, y, "ANCHORAGE / LAP LENGTHS (mm, EC2 8.4, 8.7)",
+               [("Ø", 4, "C"), ("Face", 6, "C"), ("eta1", 4.5, "C"), ("lb,rqd", 6, "R"), ("lbd", 5, "R"),
+                ("l0", 5, "R")], lrows, th, u) - 5 * th
+    notes = [f"{what} - DETAILING NOTES (EN 1992-1-1)",
+             f"Concrete C{P.fck:.0f}, steel B{P.fyk:.0f}B, h = {P.h:.0f} mm, d = {P.d:.0f} mm",
+             f"Cover: bottom {P.cb:.0f} mm, top {P.ct:.0f} mm, bar ends {P.cs:.0f} mm from edges",
+             ("Top bars lapped over the supports, bottom bars at mid-span." if is_mat()
+              else "Bottom bars lapped over the supports, top bars at mid-span."),
+             f"Bars up to {P.stock / 1000:.0f} m long; laps "
+             + ("staggered." if P.stagger else "all at one section (EC2 8.7.2(4)).")]
+    notes += [ln.strip() for ln in chk_lines]
+    if WARNINGS:
+        notes += ["Warnings:"] + [f"- {w}" for w in WARNINGS]
+    lay = {"layer": "SCHEDULE", "style": "REBAR_TXT", "color": 7}
+    for k, ln in enumerate(notes):
+        t = msp.add_text(ln, height=(1.3 if k == 0 else 0.9) * th / u, dxfattribs=lay)
+        t.set_placement((x / u, (y - k * 1.6 * th - (0.8 * th if k else 0)) / u),
+                        align=ezdxf.enums.TextEntityAlignment.TOP_LEFT)
+
+
+def zoom_all(doc):
+    """Open the drawing showing all of it (not the view saved in the source drawing)."""
+    try:
+        from ezdxf import bbox
+        ext = bbox.extents(doc.modelspace(), fast=True)
+        if ext.has_data:
+            c = ext.center
+            doc.set_modelspace_vport(height=max(ext.size.y, ext.size.x / 1.6) * 1.05, center=(c.x, c.y))
+    except Exception as ex:
+        warn(f"could not set the opening view: {ex}")
+
+
+def write_plans(src, out, groups, chains, cfg, P, G, laps, chk_lines=()):
+    """One DXF with every drawing: formwork plan, the four reinforcement plans, bar schedule,
+    steel summary, lap lengths and notes."""
     doc = new_doc(src)
     ents = list(doc.modelspace())
     offs = plan_offsets(G, P, cfg, doc)
+    th = float(cfg.get("drawing", {}).get("text_height", 150))
+    sched_at = None
     if formwork_enabled(cfg):
         off = offs["FORMWORK"]
         copy_geometry(doc, ents, (off[0] / G.u, off[1] / G.u))
         Formwork(doc, cfg, P, G, off).draw()
+        from ezdxf import bbox
+        fe = bbox.extents(doc.modelspace(), fast=True)        # the formwork plan with its legend
+        top = fe.extmax.y * G.u - 5 * th
+        bottom = G.bounds[1] + off[1] - 10 * th
+        sched_at = (fe.extmax.x * G.u + 12 * th, top, max(40, int((top - bottom) / (1.8 * th)) - 2))
     for plan in PLAN_ORDER:
         off = offs[plan]
         if off != (0.0, 0.0):
             copy_geometry(doc, ents, (off[0] / G.u, off[1] / G.u))
         draw_plan(doc, groups, chains, cfg, P, G, laps, plan, off)
+    if cfg.get("drawing", {}).get("schedule_in_dxf", True):
+        if sched_at is None:                 # no formwork plan: right of the reinforcement plans
+            from ezdxf import bbox
+            ext = bbox.extents(doc.modelspace(), fast=True)
+            sched_at = (ext.extmax.x * G.u + 15 * th, ext.extmax.y * G.u - 5 * th, 60)
+        draw_schedule(doc, sched_at[0], sched_at[1], groups, cfg, P, G, laps, chk_lines, per=sched_at[2])
+    zoom_all(doc)
     doc.saveas(out)
 
 
@@ -3005,7 +3135,7 @@ def run(dxf, cfg_path, outdir, structure=None):
     out_plans = os.path.join(outdir, f"{base}_REINFORCEMENT_PLANS.dxf")
     out_xls = os.path.join(outdir, f"{base}_bar_schedule.xlsx")
     out_rep = os.path.join(outdir, f"{base}_report.txt")
-    write_plans(dxf, out_plans, groups, chains, cfg, P, G, laps)
+    write_plans(dxf, out_plans, groups, chains, cfg, P, G, laps, chk_lines)
     outputs = [out_plans]
     if cfg.get("drawing", {}).get("separate_plan_files", False):
         names = {("B", "x"): "1_BOTTOM_X", ("B", "y"): "2_BOTTOM_Y", ("T", "x"): "3_TOP_X", ("T", "y"): "4_TOP_Y"}
