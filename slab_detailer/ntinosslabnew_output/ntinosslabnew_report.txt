@@ -1,0 +1,42 @@
+FLAT SLAB DETAILING REPORT (EN 1992-1-1)
+============================================================
+
+Slab area: 483.7 m2,  openings: 2,  walls (straight pieces): 17
+Columns: 13  -> internal: 7, corner: 5, edge: 1
+Support lines X: 3493, 3984, 6584, 7518, 9758, 11432, 13184, 19572
+Support lines Y: 4377, 10689, 14027, 15227, 17389, 18002, 18552, 23672, 27952, 32552
+
+Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
+h=240, c_bot=20, c_top=30, d=198 mm
+
+Anchorage / lap lengths (EC2 8.4, 8.7; sigma_sd = fyd, alpha1..5 = 1)
+  Ø    face   eta1   fbd     lb,rqd   l_bd    l0
+  12   bottom 1.0    2.69    484      500     750
+  12   top    1.0    2.69    484      500     750
+  14   bottom 1.0    2.69    565      600     850
+  14   top    1.0    2.69    565      600     850
+
+Checks
+  As,min (EC2 9.2.1.1) = max(0.26 fctm/fyk, 0.0013) b d = 264 mm2/m  (d = 198 mm)
+  Max spacing (EC2 9.3.1.1(3)): 400 mm generally, 250 mm in zones of max moment
+    Bottom mesh X              ф12/200: As = 565 mm2/m  -> OK; spacing OK
+    Bottom mesh Y              ф12/200: As = 565 mm2/m  -> OK; spacing OK
+    Top mesh X                 ф14/200: As = 770 mm2/m  -> OK; spacing OK
+    Top mesh Y                 ф14/200: As = 770 mm2/m  -> OK; spacing OK
+    Over internal columns: ф18/200 (combined spacing with band/mesh ≈ 100 mm)
+    Over edge columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
+    Over corner columns: ф14/200 (combined spacing with band/mesh ≈ 100 mm)
+
+Steel quantities
+  ф12     5440.6 m     4830.2 kg
+  ф14     5471.7 m     6612.1 kg
+  TOTAL       11442.3 kg   (23.7 kg/m2)
+
+Warnings
+  - none
+
+Files
+  ntinosslabnew_output/ntinosslabnew_REINFORCEMENT_PLANS.dxf
+  ntinosslabnew_output/ntinosslabnew_bar_schedule.xlsx
+  ntinosslabnew_output/ntinosslabnew_report.txt
+  ntinosslabnew_output/ntinosslabnew_REINFORCEMENT_PLANS.png
