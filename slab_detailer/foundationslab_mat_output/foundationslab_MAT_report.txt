@@ -1,0 +1,41 @@
+MAT FOUNDATION DETAILING REPORT (EN 1992-1-1)
+============================================================
+
+Mat foundation: top bars lapped over the supports, bottom bars at mid-span.
+
+Slab area: 435.8 m2,  openings: 0,  walls (straight pieces): 15
+Columns: 12  -> internal: 5, edge: 7
+Support lines X: 1702, 2164, 4764, 5698, 7938, 9612, 11364, 17752
+Support lines Y: 2827, 9139, 12477, 13677, 15839, 16452, 17002, 22189, 26402
+
+Materials: C25, fctm=2.56, fctd=1.20 MPa;  B500, fyd=435 MPa
+h=700, c_bot=50, c_top=40, d=630 mm
+
+Anchorage / lap lengths (EC2 8.4, 8.7; sigma_sd = fyd, alpha1..5 = 1)
+  Ø    face   eta1   fbd     lb,rqd   l_bd    l0
+  20   bottom 1.0    2.69    807      850     1250
+  20   top    0.7    1.89    1153     1200    1750
+
+Checks
+  As,min (EC2 9.2.1.1) = max(0.26 fctm/fyk, 0.0013) b d = 840 mm2/m  (d = 630 mm)
+  Max spacing (EC2 9.3.1.1(3)): 400 mm generally, 250 mm in zones of max moment
+    Bottom mesh X              ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Bottom mesh Y              ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Top mesh X                 ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Top mesh Y                 ф20/200: As = 1571 mm2/m  -> OK; spacing OK
+    Under internal columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+    Under edge columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+    Under corner columns: ф20/200 (combined spacing with band/mesh ≈ 100 mm)
+
+Steel quantities
+  ф20     9623.3 m    23732.5 kg
+  TOTAL       23732.5 kg   (54.5 kg/m2)
+
+Warnings
+  - none
+
+Files
+  foundationslab_mat_output/foundationslab_MAT_REINFORCEMENT_PLANS.dxf
+  foundationslab_mat_output/foundationslab_MAT_bar_schedule.xlsx
+  foundationslab_mat_output/foundationslab_MAT_report.txt
+  foundationslab_mat_output/foundationslab_MAT_REINFORCEMENT_PLANS.png

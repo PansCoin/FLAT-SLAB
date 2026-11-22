@@ -2121,10 +2121,11 @@ class Formwork:
         lvl = self.fw.get("section_level") or self.fw.get("level") or ""
         lvl = (lvl[0] + " " + lvl[1:].lstrip()) if lvl and lvl[0] in "+-±" else lvl
         cover = []
-        for w in G.walls:
+        for w in sorted(G.walls, key=lambda w_: -w_.length):     # the longest walls get theirs first
             if w.orient is None or w.length < h + 2 * stub:
                 continue
             others = unary_union([x.poly for x in G.walls if x is not w] + cols)
+            taken = unary_union(cover).buffer(1.5 * th) if cover else Polygon()   # sections already drawn
             n0, n1 = (w.cx - w.thk / 2, w.cx + w.thk / 2) if w.orient == "y" else \
                      (w.cy - w.thk / 2, w.cy + w.thk / 2)
             xy = (lambda s_, r_: (s_, r_)) if w.orient == "y" else (lambda s_, r_: (r_, s_))   # (n, t) -> (x, y)
@@ -2132,6 +2133,10 @@ class Formwork:
             best = None
             for tc in (w.lo + L / 3, w.lo + 2 * L / 3, w.lo + L / 2):
                 tc = min(max(tc, w.lo + h / 2 + stub), w.hi - h / 2 - stub)
+                stub_rect = Polygon([xy(n0, tc - h / 2 - stub), xy(n1, tc - h / 2 - stub),
+                                     xy(n1, tc + h / 2 + stub), xy(n0, tc + h / 2 + stub)])
+                if not taken.is_empty and stub_rect.intersects(taken):
+                    continue
                 sides = []
                 for sd in (-1, 1):
                     face = n0 if sd < 0 else n1
@@ -2142,7 +2147,8 @@ class Formwork:
                         a, b = sorted((face, face + sd * e))
                         rect = Polygon([xy(a, tc - h / 2 - 50), xy(b, tc - h / 2 - 50),
                                         xy(b, tc + h / 2 + 50), xy(a, tc + h / 2 + 50)])
-                        if G.slab.buffer(5).contains(rect) and not rect.intersects(others.buffer(-1)):
+                        if G.slab.buffer(5).contains(rect) and not rect.intersects(others.buffer(-1)) and \
+                                (taken.is_empty or not rect.intersects(taken)):
                             sides.append((sd, e))
                             break
                 if sides and (best is None or len(sides) > len(best[1])):
